@@ -1,0 +1,28 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="mudbrick_wall">
+    <static>true</static>
+    <link name="wall_link">
+      <collision name="collision">
+        <geometry>
+          <box>
+            <size>10.0 0.5 4.0</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual">
+        <geometry>
+          <box>
+            <size>10.0 0.5 4.0</size>
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Dirt</name>
+          </script>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

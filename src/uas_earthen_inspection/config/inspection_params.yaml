@@ -1,0 +1,37 @@
+/**:
+  ros__parameters:
+    # Sensor Topics & Frames
+    camera_rgb_topic: "/camera/color/image_raw"
+    camera_depth_topic: "/camera/depth/image_raw"
+    waypoint_reached_topic: "/uav/waypoint_reached"
+    captured_frame_topic: "/inspection/captured_frame"
+    detections_topic: "/inspection/detections"
+    revisit_waypoints_topic: "/planner/revisit_waypoints"
+    uav_pose_topic: "/px4/vehicle_pose"
+
+    # Execution Parameters (Launch matrix configuration)
+    detector_backend: "rag_vlm" # Options: raw_vlm | rag_vlm | yolo
+    flight_strategy: "revisit"  # Options: single_pass | revisit
+
+    # Defect Ambiguity Band Parameters
+    confidence_ambiguity_min: 0.4
+    confidence_ambiguity_max: 0.7
+
+    # Revisit Flight Distance Math (D_revisit = max(D_min, D_base - k * (1 - C)))
+    d_base: 3.0   # Nominal standoff distance in meters
+    d_min: 1.0    # Minimum safe clearance distance in meters
+    k_standoff: 2.0 # Scaling factor for confidence uncertainty
+
+    # Camera Intrinsics Parameters (Gazebo / Real Camera Model)
+    fx: 525.0
+    fy: 525.0
+    cx: 320.0
+    cy: 240.0
+    image_width: 640
+    image_height: 480
+
+    # Knowledge Base & Model Paths
+    ontology_json_path: "knowledge_base/defect_ontology.json"
+    prompts_yaml_path: "knowledge_base/prompts.yaml"
+    clip_embeddings_path: "models/embeddings/clip_kb_embeddings.pt"
+    yolo_weights_path: "models/yolo/yolo_earthen_v11.pt"

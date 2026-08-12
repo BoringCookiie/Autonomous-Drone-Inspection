@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.venv
+venv/
+
+# ROS / Colcon
+install/
+log/
+build/
+
+# Large Datasets & Models
+data/SDNET2018/*
+!data/SDNET2018/.gitkeep
+data/MBDD2025/*
+!data/MBDD2025/.gitkeep
+data/earthen_augmented/*
+!data/earthen_augmented/.gitkeep
+data/evaluation_set/*
+!data/evaluation_set/.gitkeep
+models/yolo/*.pt
+models/yolo/*.onnx
+!models/yolo/README.md
+models/embeddings/*.pt
+models/embeddings/*.npy
+!models/embeddings/README.md
+
+# Results & ROS Bags
+results/raw_logs/*
+results/sweeps/*
+!results/.gitkeep
+rosbags/*
+!rosbags/README.md
+
+# IDEs & System Files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

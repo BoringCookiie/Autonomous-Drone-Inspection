@@ -1,0 +1,28 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="earthen_heritage_world">
+    <!-- Directional Sun Light -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- Ground Plane -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- Earthen Mudbrick Heritage Wall -->
+    <include>
+      <uri>model://mudbrick_wall</uri>
+      <name>earthen_wall_01</name>
+      <pose>0 5 0 0 0 0</pose>
+    </include>
+
+    <!-- Physics Engine Setup -->
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+  </world>
+</sdf>

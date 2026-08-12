@@ -1,0 +1,40 @@
+{
+  "project": "Knowledge-Grounded Zero-Shot Defect Inspection for Earthen Heritage Architecture",
+  "version": "1.0.0",
+  "defect_classes": [
+    {
+      "id": "structural_crack",
+      "name": "Structural Crack",
+      "severity_levels": ["minor", "moderate", "severe"],
+      "description": "Linear separation or fracture appearing on earthen mudbrick surfaces, caused by structural settling, seismic stress, or thermal expansion. Characterized by sharp high-contrast dark lines.",
+      "prompt_template": "An earthen mudbrick wall showing a prominent structural crack fracture with sharp linear boundary.",
+      "keywords": ["crack", "fracture", "fissure", "linear split", "structural gap"],
+      "ref_crops": [
+        "knowledge_base/ref_crops/structural_crack/crop_01.png",
+        "knowledge_base/ref_crops/structural_crack/crop_02.png"
+      ]
+    },
+    {
+      "id": "surface_erosion",
+      "name": "Surface Erosion",
+      "severity_levels": ["slight", "deep", "cavity"],
+      "description": "Loss of surface plaster or clay binding material caused by wind, rain wash, or weathering. Results in rough, pitted texture and exposed inner mudbrick layers.",
+      "prompt_template": "An earthen architectural wall exhibiting surface erosion, pitted texture, and degraded plaster binding.",
+      "keywords": ["erosion", "weathering", "pitted", "spalling", "loss of plaster"],
+      "ref_crops": [
+        "knowledge_base/ref_crops/erosion/crop_01.png"
+      ]
+    },
+    {
+      "id": "moisture_stain",
+      "name": "Moisture Stain & Efflorescence",
+      "severity_levels": ["damp", "efflorescence", "discoloration"],
+      "description": "Dark damp patches or white salt crust deposits (efflorescence) caused by moisture capillary rise or rainwater infiltration into porous rammed earth.",
+      "prompt_template": "A damp earthen wall showing dark water discoloration and white salt efflorescence staining.",
+      "keywords": ["moisture", "damp", "stain", "efflorescence", "water mark", "discoloration"],
+      "ref_crops": [
+        "knowledge_base/ref_crops/moisture_stain/crop_01.png"
+      ]
+    }
+  ]
+}
