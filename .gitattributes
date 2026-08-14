@@ -1,0 +1,4 @@
+# Executable and container files must retain Unix line endings on Windows checkouts.
+*.py text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
