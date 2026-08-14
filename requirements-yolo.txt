@@ -1,4 +1,5 @@
 ultralytics>=8.3,<9
 Pillow>=10,<13
 PyYAML>=6,<7
-numpy>=1.24
+# ROS2 Humble cv_bridge binaries are built against the NumPy 1.x ABI.
+numpy>=1.24,<2
