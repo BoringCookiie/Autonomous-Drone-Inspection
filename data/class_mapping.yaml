@@ -1,0 +1,16 @@
+# Canonical ontology. Extend aliases only when a source dataset documents the class.
+names:
+  0: structural_crack
+  1: surface_erosion
+  2: moisture_stain
+aliases:
+  crack: structural_crack
+  cracks: structural_crack
+  fissure: structural_crack
+  structural_crack: structural_crack
+  erosion: surface_erosion
+  surface_erosion: surface_erosion
+  moisture: moisture_stain
+  humidity: moisture_stain
+  humidite: moisture_stain
+  moisture_stain: moisture_stain

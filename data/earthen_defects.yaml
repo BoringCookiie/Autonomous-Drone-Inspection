@@ -1,0 +1,10 @@
+# Generated split location. Run scripts/prepare_yolo_dataset.py before training.
+path: yolo
+train: images/train
+val: images/val
+test: images/test
+nc: 3
+names:
+  0: structural_crack
+  1: surface_erosion
+  2: moisture_stain

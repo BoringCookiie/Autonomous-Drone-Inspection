@@ -36,6 +36,7 @@ data/MBDD2025/*
 !data/MBDD2025/.gitkeep
 data/earthen_augmented/*
 !data/earthen_augmented/.gitkeep
+data/yolo/*
 data/evaluation_set/*
 !data/evaluation_set/.gitkeep
 models/yolo/*.pt
@@ -48,6 +49,9 @@ models/embeddings/*.npy
 # Results & ROS Bags
 results/raw_logs/*
 results/sweeps/*
+results/yolo/runs/*
+results/yolo/test/*
+results/yolo/metrics.json
 !results/.gitkeep
 rosbags/*
 !rosbags/README.md

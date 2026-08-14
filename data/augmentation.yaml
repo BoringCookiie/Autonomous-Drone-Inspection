@@ -1,0 +1,16 @@
+# Conservative online augmentation for drone imagery of textured earthen walls.
+hsv_h: 0.01
+hsv_s: 0.25
+hsv_v: 0.25
+degrees: 7.0
+translate: 0.08
+scale: 0.25
+shear: 2.0
+perspective: 0.0002
+flipud: 0.0
+fliplr: 0.5
+mosaic: 0.5
+mixup: 0.0
+copy_paste: 0.0
+erasing: 0.1
+close_mosaic: 10
