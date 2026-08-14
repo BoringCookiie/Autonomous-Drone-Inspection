@@ -21,9 +21,14 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch and AI dependencies
+# Install CPU PyTorch from its dedicated index first. Keeping this command separate
+# prevents pip from looking for PyPI-only packages (for example ultralytics) there.
 RUN pip3 install --no-cache-dir \
-    torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch torchvision
+
+# Install the remaining AI dependencies from the default PyPI index.
+RUN pip3 install --no-cache-dir \
     ultralytics \
     git+https://github.com/openai/CLIP.git \
     opencv-python \

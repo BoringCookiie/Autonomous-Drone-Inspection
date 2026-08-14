@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   sim_stack:
     build:
@@ -7,7 +5,7 @@ services:
       dockerfile: docker/Dockerfile
     container_name: earthen_uav_sim
     environment:
-      - DISPLAY=${DISPLAY}
+      - DISPLAY=${DISPLAY:-}
       - QT_X11_NO_MITSHM=1
     volumes:
       - ..:/workspace/Autonomous-Drone-Inspection
