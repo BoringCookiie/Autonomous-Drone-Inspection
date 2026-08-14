@@ -103,7 +103,22 @@ def matching_label(source: Path, image: Path) -> Path | None:
     if "images" in parts:
         parts[parts.index("images")] = "labels"
         candidates.append((source / Path(*parts)).with_suffix(".txt"))
+    if "JPEGImages" in parts:
+        canonical_parts = parts.copy()
+        canonical_parts[canonical_parts.index("JPEGImages")] = "LabelsCanonical"
+        candidates.append((source / Path(*canonical_parts)).with_suffix(".txt"))
     return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def perceptual_keys(value: int) -> tuple[tuple[int, int], ...]:
+    """Five exact bands: hashes within Hamming distance 4 share at least one."""
+    widths = (13, 13, 13, 13, 12)
+    offset = 0
+    keys = []
+    for band, width in enumerate(widths):
+        keys.append((band, (value >> offset) & ((1 << width) - 1)))
+        offset += width
+    return tuple(keys)
 
 
 def inspect_sources(sources: list[Path], args: argparse.Namespace) -> tuple[list[Sample], list[dict]]:
@@ -111,6 +126,7 @@ def inspect_sources(sources: list[Path], args: argparse.Namespace) -> tuple[list
     issues: list[dict] = []
     seen_hashes: dict[str, Path] = {}
     seen_perceptual: list[tuple[int, Path]] = []
+    perceptual_buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
     for source in sources:
         if not source.is_dir():
             issues.append({"source": str(source), "error": "source directory missing"})
@@ -138,12 +154,16 @@ def inspect_sources(sources: list[Path], args: argparse.Namespace) -> tuple[list
             if sha256 in seen_hashes:
                 issues.append({"image": str(image), "error": "exact duplicate", "duplicate_of": str(seen_hashes[sha256])})
                 continue
-            near_duplicate = next((other for other_hash, other in seen_perceptual if (perceptual_hash ^ other_hash).bit_count() <= args.duplicate_distance), None)
+            candidate_indices = {index for key in perceptual_keys(perceptual_hash) for index in perceptual_buckets[key]}
+            near_duplicate = next((seen_perceptual[index][1] for index in candidate_indices if (perceptual_hash ^ seen_perceptual[index][0]).bit_count() <= args.duplicate_distance), None)
             if near_duplicate is not None:
                 issues.append({"image": str(image), "error": "perceptual near-duplicate", "duplicate_of": str(near_duplicate)})
                 continue
             seen_hashes[sha256] = image
             seen_perceptual.append((perceptual_hash, image))
+            sample_index = len(seen_perceptual) - 1
+            for key in perceptual_keys(perceptual_hash):
+                perceptual_buckets[key].append(sample_index)
             samples.append(Sample(source.name, image, label, width, height, sha256, perceptual_hash, classes))
     return samples, issues
 

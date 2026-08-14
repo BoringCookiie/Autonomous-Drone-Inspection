@@ -9,8 +9,10 @@ aliases:
   fissure: structural_crack
   structural_crack: structural_crack
   erosion: surface_erosion
+  abscission: surface_erosion
   surface_erosion: surface_erosion
   moisture: moisture_stain
+  leakage: moisture_stain
   humidity: moisture_stain
   humidite: moisture_stain
   moisture_stain: moisture_stain

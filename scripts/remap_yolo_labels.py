@@ -16,6 +16,7 @@ def main() -> int:
     parser.add_argument("--source-yaml", type=Path, required=True, help="Source YOLO YAML containing names")
     parser.add_argument("--mapping", type=Path, default=ROOT / "data/class_mapping.yaml")
     parser.add_argument("--output", type=Path, required=True, help="New labels directory (never in-place)")
+    parser.add_argument("--drop-class", action="append", default=[], help="Documented source class to omit; repeatable")
     args = parser.parse_args()
     try:
         import yaml
@@ -31,12 +32,18 @@ def main() -> int:
     source_names = {int(key): value for key, value in raw_names.items()} if isinstance(raw_names, dict) else dict(enumerate(raw_names))
     canonical = {name: int(index) for index, name in mapping_cfg.get("names", {}).items()}
     aliases = mapping_cfg.get("aliases", {})
+    dropped_names = {name.strip().lower() for name in args.drop_class}
     id_map = {}
+    dropped_ids = set()
     for source_id, source_name in source_names.items():
-        target_name = aliases.get(str(source_name).strip().lower())
+        normalized_name = str(source_name).strip().lower()
+        if normalized_name in dropped_names:
+            dropped_ids.add(source_id)
+            continue
+        target_name = aliases.get(normalized_name)
         if target_name in canonical:
             id_map[source_id] = canonical[target_name]
-    unmapped = sorted(set(source_names) - set(id_map))
+    unmapped = sorted(set(source_names) - set(id_map) - dropped_ids)
     if unmapped:
         details = ", ".join(f"{idx}:{source_names[idx]}" for idx in unmapped)
         print(f"ERROR: unmapped source classes ({details}); review data/class_mapping.yaml", file=sys.stderr)
@@ -56,6 +63,8 @@ def main() -> int:
             except (ValueError, IndexError):
                 print(f"ERROR: malformed class id at {source}:{line_no}", file=sys.stderr)
                 return 3
+            if source_id in dropped_ids:
+                continue
             if source_id not in id_map:
                 print(f"ERROR: unknown class id {source_id} at {source}:{line_no}", file=sys.stderr)
                 return 3
