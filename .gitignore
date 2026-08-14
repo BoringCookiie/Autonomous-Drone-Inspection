@@ -30,6 +30,7 @@ log/
 build/
 
 # Large Datasets & Models
+/yolo*.pt
 data/SDNET2018/*
 !data/SDNET2018/.gitkeep
 data/MBDD2025/*
@@ -52,6 +53,7 @@ results/sweeps/*
 results/yolo/runs/*
 results/yolo/test/*
 results/yolo/metrics.json
+results/yolo/resolved_dataset.yaml
 !results/.gitkeep
 rosbags/*
 !rosbags/README.md
