@@ -18,11 +18,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
 from cv_bridge import CvBridge, CvBridgeError
-import cv2
 import numpy as np
-import torch
 import os
-import yaml
 from abc import ABC, abstractmethod
 
 # Import RAG Knowledge Base helper module
@@ -90,44 +87,49 @@ class RAGVLMDetector(BaseDetector):
 class YOLOv11Detector(BaseDetector):
     """Backend 3: Supervised YOLOv11 Detector."""
 
-    def __init__(self, weights_path: str):
-        print(f"[YOLOv11Detector] Loading YOLOv11 weights from {weights_path}")
-        self.weights_path = weights_path
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    EXPECTED_CLASSES = {"structural_crack", "surface_erosion", "moisture_stain"}
 
-        if os.path.exists(weights_path):
-            try:
-                from ultralytics import YOLO
-                self.model = YOLO(weights_path)
-            except Exception as e:
-                print(f"[YOLOv11Detector] Failed to load PyTorch weights: {e}. Fallback to mock.")
+    def __init__(self, weights_path: str, confidence: float = 0.25, device: str = "", imgsz: int = 640):
+        print(f"[YOLOv11Detector] Loading YOLOv11 weights from {weights_path}")
+        self.weights_path = os.path.abspath(os.path.expanduser(weights_path))
+        self.confidence = confidence
+        self.device = device or None
+        self.imgsz = imgsz
+        self.model = None
+        self.error = None
+        if not os.path.isfile(self.weights_path):
+            self.error = f"YOLO weights not found: {self.weights_path}"
+            return
+        try:
+            from ultralytics import YOLO
+            self.model = YOLO(self.weights_path)
+            names = set(self.model.names.values()) if isinstance(self.model.names, dict) else set(self.model.names)
+            if names != self.EXPECTED_CLASSES:
+                self.error = f"Unexpected model classes {sorted(names)}; expected {sorted(self.EXPECTED_CLASSES)}"
                 self.model = None
-        else:
-            self.model = None
+        except Exception as exc:
+            self.error = f"Could not load YOLO weights {self.weights_path}: {exc}"
+
+    @property
+    def available(self):
+        return self.model is not None
 
     def detect(self, cv_image: np.ndarray):
-        if self.model is not None:
-            results = self.model(cv_image)[0]
-            detections = []
-            for box in results.boxes:
-                xyxy = box.xyxy[0].cpu().numpy().tolist()
-                conf = float(box.conf[0].cpu().numpy())
-                cls_id = int(box.cls[0].cpu().numpy())
-                cls_name = self.model.names[cls_id]
-                detections.append({
-                    'bbox': xyxy,
-                    'class_name': cls_name,
-                    'confidence': conf
-                })
-            return detections
-        else:
-            # Mock YOLO output if model weights not present
-            h, w, _ = cv_image.shape
-            return [{
-                'bbox': [int(w * 0.1), int(h * 0.2), int(w * 0.4), int(h * 0.5)],
-                'class_name': 'surface_erosion',
-                'confidence': 0.92
-            }]
+        if self.model is None:
+            raise RuntimeError(self.error or "YOLO detector is unavailable")
+        result = self.model.predict(
+            source=cv_image, conf=self.confidence, imgsz=self.imgsz,
+            device=self.device, verbose=False,
+        )[0]
+        detections = []
+        for box in result.boxes:
+            cls_id = int(box.cls[0].item())
+            detections.append({
+                'bbox': box.xyxy[0].cpu().tolist(),
+                'class_name': self.model.names[cls_id],
+                'confidence': float(box.conf[0].item()),
+            })
+        return detections
 
 
 class DetectionNode(Node):
@@ -146,6 +148,9 @@ class DetectionNode(Node):
         self.declare_parameter('clip_embeddings_path', 'models/embeddings/clip_kb_embeddings.pt')
         self.declare_parameter('prompts_yaml_path', 'knowledge_base/prompts.yaml')
         self.declare_parameter('yolo_weights_path', 'models/yolo/yolo_earthen_v11.pt')
+        self.declare_parameter('yolo_confidence_threshold', 0.25)
+        self.declare_parameter('yolo_device', '')
+        self.declare_parameter('yolo_image_size', 640)
 
         # Retrieve parameter values
         self.backend_type = self.get_parameter('detector_backend').value
@@ -166,7 +171,17 @@ class DetectionNode(Node):
             self.detector = RAGVLMDetector(ontology_path, embeddings_path, prompts_path)
         elif self.backend_type == 'yolo':
             weights_path = self.get_parameter('yolo_weights_path').value
-            self.detector = YOLOv11Detector(weights_path)
+            self.detector = YOLOv11Detector(
+                weights_path,
+                confidence=float(self.get_parameter('yolo_confidence_threshold').value),
+                device=str(self.get_parameter('yolo_device').value),
+                imgsz=int(self.get_parameter('yolo_image_size').value),
+            )
+            if not self.detector.available:
+                self.get_logger().error(
+                    f"YOLO backend disabled: {self.detector.error}. "
+                    "Frames will be ignored until a valid model is configured."
+                )
         else:
             raise ValueError(f"Unknown detector backend: {self.backend_type}")
 
@@ -189,7 +204,11 @@ class DetectionNode(Node):
             return
 
         # Execute detection inference
-        raw_detections = self.detector.detect(cv_img)
+        try:
+            raw_detections = self.detector.detect(cv_img)
+        except Exception as exc:
+            self.get_logger().error(f"{self.backend_type.upper()} inference failed: {exc}")
+            return
         self.get_logger().info(
             f"[{self.backend_type.upper()}] Detected {len(raw_detections)} defect(s)."
         )

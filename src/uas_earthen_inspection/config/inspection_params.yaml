@@ -35,3 +35,6 @@
     prompts_yaml_path: "knowledge_base/prompts.yaml"
     clip_embeddings_path: "models/embeddings/clip_kb_embeddings.pt"
     yolo_weights_path: "models/yolo/yolo_earthen_v11.pt"
+    yolo_confidence_threshold: 0.25
+    yolo_device: "" # Empty = Ultralytics automatic selection; examples: cpu, 0
+    yolo_image_size: 640

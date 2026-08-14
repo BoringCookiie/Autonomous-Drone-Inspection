@@ -15,7 +15,7 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
-    zip_safe=true,
+    zip_safe=True,
     maintainer='Person 1',
     maintainer_email='person1@earthen-uav.org',
     description='Zero-Shot VLM RAG Defect Inspection & Revisit Loop Package',
