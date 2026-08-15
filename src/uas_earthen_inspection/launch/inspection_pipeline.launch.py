@@ -33,6 +33,15 @@ def generate_launch_description():
     config_file = LaunchConfiguration('config_file')
 
     # 1. Per-Waypoint Capture Node
+    waypoint_reached_node = Node(
+        package='uas_earthen_inspection',
+        executable='waypoint_reached_node.py',
+        name='waypoint_reached_node',
+        output='screen',
+        parameters=[config_file]
+    )
+
+    # 2. Per-Waypoint Capture Node
     per_waypoint_capture_node = Node(
         package='uas_earthen_inspection',
         executable='per_waypoint_capture_node.py',
@@ -41,7 +50,7 @@ def generate_launch_description():
         parameters=[config_file]
     )
 
-    # 2. Detection Node (Parameterized backend)
+    # 3. Detection Node (Parameterized backend)
     detection_node = Node(
         package='uas_earthen_inspection',
         executable='detection_node.py',
@@ -53,7 +62,7 @@ def generate_launch_description():
         ]
     )
 
-    # 3. Revisit Waypoint Generator Node
+    # 4. Revisit Waypoint Generator Node
     revisit_waypoint_generator_node = Node(
         package='uas_earthen_inspection',
         executable='revisit_waypoint_generator.py',
@@ -69,6 +78,7 @@ def generate_launch_description():
         detector_backend_arg,
         flight_strategy_arg,
         config_file_arg,
+        waypoint_reached_node,
         per_waypoint_capture_node,
         detection_node,
         revisit_waypoint_generator_node

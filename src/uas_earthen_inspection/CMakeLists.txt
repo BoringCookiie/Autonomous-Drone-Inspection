@@ -15,6 +15,7 @@ install(PROGRAMS
   uas_earthen_inspection/detection_node.py
   uas_earthen_inspection/rag_knowledge_base.py
   uas_earthen_inspection/revisit_waypoint_generator.py
+  uas_earthen_inspection/waypoint_reached_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

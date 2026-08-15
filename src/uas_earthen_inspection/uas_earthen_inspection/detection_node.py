@@ -29,6 +29,14 @@ from abc import ABC, abstractmethod
 from uas_earthen_inspection.rag_knowledge_base import RAGKnowledgeBase
 
 
+def resolve_project_path(value: str) -> str:
+    """Resolve repository-relative model and knowledge-base paths."""
+    if os.path.isabs(value):
+        return value
+    root = os.environ.get('UAS_INSPECTION_ROOT', os.getcwd())
+    return os.path.join(root, value)
+
+
 class BaseDetector(ABC):
     """Abstract Base Interface for Defect Detectors."""
 
@@ -81,7 +89,7 @@ class RAGVLMDetector(BaseDetector):
         # 2. Query VLM with Grounded Prompt
         h, w, _ = cv_image.shape
         return [{
-            'bbox': [int(w * 0.25), int(h * 0.35), int(w * 0.55), int(w * 0.65)],
+            'bbox': [int(w * 0.25), int(h * 0.35), int(w * 0.55), int(h * 0.65)],
             'class_name': kb_results[0]['id'] if kb_results else 'structural_crack',
             'confidence': 0.85  # Higher confidence due to RAG grounding
         }]
@@ -157,15 +165,15 @@ class DetectionNode(Node):
         # Instantiate selected backend
         self.get_logger().info(f"Initializing AI Detector with backend: [{self.backend_type.upper()}]")
         if self.backend_type == 'raw_vlm':
-            prompts_path = self.get_parameter('prompts_yaml_path').value
+            prompts_path = resolve_project_path(self.get_parameter('prompts_yaml_path').value)
             self.detector = RawVLMDetector(prompts_path)
         elif self.backend_type == 'rag_vlm':
-            ontology_path = self.get_parameter('ontology_json_path').value
-            embeddings_path = self.get_parameter('clip_embeddings_path').value
-            prompts_path = self.get_parameter('prompts_yaml_path').value
+            ontology_path = resolve_project_path(self.get_parameter('ontology_json_path').value)
+            embeddings_path = resolve_project_path(self.get_parameter('clip_embeddings_path').value)
+            prompts_path = resolve_project_path(self.get_parameter('prompts_yaml_path').value)
             self.detector = RAGVLMDetector(ontology_path, embeddings_path, prompts_path)
         elif self.backend_type == 'yolo':
-            weights_path = self.get_parameter('yolo_weights_path').value
+            weights_path = resolve_project_path(self.get_parameter('yolo_weights_path').value)
             self.detector = YOLOv11Detector(weights_path)
         else:
             raise ValueError(f"Unknown detector backend: {self.backend_type}")

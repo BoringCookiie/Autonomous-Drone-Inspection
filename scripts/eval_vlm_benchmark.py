@@ -15,11 +15,16 @@ import json
 import numpy as np
 
 
-def benchmark_vlm(eval_dataset_dir: str, ontology_path: str):
+def benchmark_vlm(eval_dataset_dir: str, ontology_path: str, mock: bool = False):
     print(f"[INFO] Benchmarking Zero-Shot VLM on evaluation dataset: {eval_dataset_dir}")
 
     if not os.path.exists(eval_dataset_dir):
         print(f"[WARNING] Evaluation dataset directory '{eval_dataset_dir}' not found.")
+
+    if not mock:
+        raise RuntimeError(
+            'Real VLM evaluation is not implemented yet; pass --mock only for a smoke-test artifact.'
+        )
 
     results = {
         "benchmark_name": "Zero-Shot VLM Defect Inspection Benchmark",
@@ -57,9 +62,10 @@ def main():
     parser = argparse.ArgumentParser(description="Run Standalone VLM Benchmark")
     parser.add_argument("--eval-dir", default="data/evaluation_set", help="Path to evaluation frames")
     parser.add_argument("--ontology", default="knowledge_base/defect_ontology.json", help="Path to ontology JSON")
+    parser.add_argument("--mock", action="store_true", help="Write illustrative values for smoke testing")
     args = parser.parse_args()
 
-    benchmark_vlm(args.eval_dir, args.ontology)
+    benchmark_vlm(args.eval_dir, args.ontology, args.mock)
 
 
 if __name__ == '__main__':

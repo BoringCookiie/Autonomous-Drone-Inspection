@@ -12,10 +12,17 @@ Description:
 
 import os
 import json
-import torch
 import numpy as np
 from PIL import Image
 from typing import List, Dict, Any
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    TORCH_AVAILABLE = False
+
 
 
 class RAGKnowledgeBase:
@@ -26,7 +33,11 @@ class RAGKnowledgeBase:
     def __init__(self, ontology_json_path: str, embeddings_path: str, device: str = None):
         self.ontology_path = ontology_json_path
         self.embeddings_path = embeddings_path
-        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        if TORCH_AVAILABLE:
+            self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = 'cpu'
+
 
         # Load defect ontology taxonomy JSON
         self.defect_classes = self.load_knowledge_base(ontology_json_path)

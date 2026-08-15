@@ -1,19 +1,283 @@
-version: '3.8'
+# ============================================================
+#  UAS Infrastructure Monitoring — Docker Compose
+#  Phase 1 Prototype  |  Deadline: 15 May 2025
+#
+#  Two isolated stacks sharing the repository's data directories:
+#    sim_stack  — ROS2 Humble + Gazebo + PX4 SITL + MAVROS
+#                 + RTAB-Map + OctoMap  (Members 1 & 2)
+#    ai_stack   — CUDA + PyTorch + YOLOv11 + ROS2 rosbag
+#                 tools  (Members 3 & 4)
+#
+#  Usage:
+#    docker compose --project-directory . -f docker/docker-compose.yml --profile sim up -d
+#    docker compose --project-directory . -f docker/docker-compose.yml --profile ai up -d
+#    docker compose --project-directory . -f docker/docker-compose.yml --profile ai-gpu up -d
+#
+#  Optional sim variants (same image):
+#    --profile sim-headless   servers / no GUI mounts
+#    --profile sim-wayland    mount host Wayland socket + DRI
+#    --profile sim-novnc      Gazebo in TigerVNC, browser http://localhost:6080
+# ============================================================
 
 services:
+
+  # ─────────────────────────────────────────────────────────
+  #  SIM STACK  (Members 1 & 2)
+  # ─────────────────────────────────────────────────────────
   sim_stack:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile
-    container_name: earthen_uav_sim
-    environment:
-      - DISPLAY=${DISPLAY}
-      - QT_X11_NO_MITSHM=1
-    volumes:
-      - ..:/workspace/Autonomous-Drone-Inspection
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    image: uas/sim_stack:latest
+    container_name: uas_sim
+    profiles: [sim]
+
+    # host networking = ROS2 DDS works across containers
+    # and with the host machine without any config
     network_mode: host
-    ipc: host
+
     privileged: true
+
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+      - LIBGL_ALWAYS_SOFTWARE=0          # Use real OpenGL
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - GAZEBO_IP=127.0.0.1
+      # Avoid ccache/temp writing into /run/user/<uid> on some hosts
+      - TMPDIR=/tmp
+      - CCACHE_TEMPDIR=/tmp/ccache-tmp
+      - XAUTHORITY=/home/uas/.Xauthority
+      # Tell PX4 which Gazebo world to use at runtime
+      - PX4_GZ_MODEL=x500
+      - PX4_GZ_WORLD=${PX4_GZ_WORLD:-default}
+      - UAS_INSPECTION_ROOT=/home/uas/inspection
+
+    volumes:
+      # X11 display forwarding (Gazebo GUI + RViz2)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Mount into uas home — processes run as user uas (not root)
+      - ${HOME}/.Xauthority:/home/uas/.Xauthority:rw
+      # Persistent PX4 build — cloned once, survives rebuilds
+      - px4_build:/home/uas/PX4-Autopilot
+      # Custom Gazebo worlds live outside PX4 and are copied in after PX4 is cloned.
+      # Do not bind-mount inside /home/uas/PX4-Autopilot; it makes the PX4 volume non-empty/busy.
+      - ./gazebo_simulation/worlds:/home/uas/gz_worlds:ro
+      # Build the ROS package from the canonical source tree.
+      - ./src:/home/uas/ros2_ws/src:ro
+      # Rosbags written here by sim, read by AI
+      - ./rosbags:/home/uas/rosbags
+      - ./scripts:/home/uas/scripts:ro
+      - ./docker:/home/uas/docker:ro
+      - .:/home/uas/inspection:ro
+      - /dev/dri:/dev/dri
+
     stdin_open: true
     tty: true
+
+    # Restart policy: keep running if container crashes
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  #  AI STACK  (Members 3 & 4)
+  # ─────────────────────────────────────────────────────────
+  ai_stack:
+    build:
+      context: .
+      dockerfile: ./docker/ai/Dockerfile
+    image: uas/ai_stack:latest
+    container_name: uas_ai
+    profiles: [ai]
+
+    network_mode: host
+
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - UAS_INSPECTION_ROOT=/home/uas/inspection
+
+    volumes:
+      # Rosbags: AI reads bags recorded by sim team (read-only)
+      - ./rosbags:/home/uas/rosbags:ro
+      # Datasets: SDNET2018 + MBDD2025 go here
+      - ./data:/home/uas/datasets
+      # Trained weights output here, shared back to sim for inference node
+      - ./models/yolo:/home/uas/weights
+      # Shared ROS2 workspace (inference node lives here)
+      - ./src:/home/uas/ros2_ws/src:ro
+      - .:/home/uas/inspection:ro
+
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # Same image as ai_stack; use when NVIDIA Container Toolkit is installed.
+  ai_stack_gpu:
+    build:
+      context: .
+      dockerfile: ./docker/ai/Dockerfile
+    image: uas/ai_stack:latest
+    container_name: uas_ai_gpu
+    profiles: [ai-gpu]
+
+    network_mode: host
+
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - UAS_INSPECTION_ROOT=/home/uas/inspection
+
+    volumes:
+      - ./rosbags:/home/uas/rosbags:ro
+      - ./data:/home/uas/datasets
+      - ./models/yolo:/home/uas/weights
+      - ./src:/home/uas/ros2_ws/src:ro
+      - .:/home/uas/inspection:ro
+
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # Headless simulation variant (no X11 mounts) — useful for servers/CI
+  sim_headless:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: uas/sim_stack:latest
+    container_name: uas_sim_headless
+    profiles: [sim-headless]
+
+    network_mode: host
+    ipc: host
+
+    privileged: true
+
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - GAZEBO_IP=127.0.0.1
+      - TMPDIR=/tmp
+      - CCACHE_TEMPDIR=/tmp/ccache-tmp
+      - PX4_GZ_MODEL=x500
+      - PX4_GZ_WORLD=${PX4_GZ_WORLD:-default}
+      - UAS_INSPECTION_ROOT=/home/uas/inspection
+
+    volumes:
+      - px4_build:/home/uas/PX4-Autopilot
+      - ./gazebo_simulation/worlds:/home/uas/gz_worlds:ro
+      - ./src:/home/uas/ros2_ws/src:ro
+      - ./rosbags:/home/uas/rosbags
+      - ./scripts:/home/uas/scripts:ro
+      - ./docker:/home/uas/docker:ro
+      - .:/home/uas/inspection:ro
+
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # Wayland-compatible simulation (uses host Wayland/XWayland)
+  sim_wayland:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: uas/sim_stack:latest
+    container_name: uas_sim_wayland
+    profiles: [sim-wayland]
+
+    network_mode: host
+    ipc: host
+
+    privileged: true
+
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - GAZEBO_IP=127.0.0.1
+      - PX4_GZ_MODEL=x500
+      - PX4_GZ_WORLD=${PX4_GZ_WORLD:-default}
+      - UAS_INSPECTION_ROOT=/home/uas/inspection
+      - WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
+      - XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/1000}
+      - QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-wayland}
+      - GDK_BACKEND=${GDK_BACKEND:-wayland}
+      - TMPDIR=/tmp
+      - CCACHE_TEMPDIR=/tmp/ccache-tmp
+
+    volumes:
+      - px4_build:/home/uas/PX4-Autopilot
+      - ./gazebo_simulation/worlds:/home/uas/gz_worlds:ro
+      - ./src:/home/uas/ros2_ws/src:ro
+      - ./rosbags:/home/uas/rosbags
+      - ./scripts:/home/uas/scripts:ro
+      - ./docker:/home/uas/docker:ro
+      - .:/home/uas/inspection:ro
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}:${XDG_RUNTIME_DIR:-/run/user/1000}:rw
+      - /dev/dri:/dev/dri
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # noVNC variant: runs Gazebo GUI in Xvnc and streams to browser.
+  # Use when host X11/Wayland forwarding is unavailable (e.g. some Docker Desktop setups).
+  sim_novnc:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: uas/sim_stack:latest
+    container_name: uas_sim_novnc
+    profiles: [sim-novnc]
+
+    ports:
+      - "6080:6080"   # noVNC (web)
+      - "5901:5901"   # raw VNC (optional, display :1)
+
+    ipc: host
+
+    privileged: true
+
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - GAZEBO_IP=127.0.0.1
+      - PX4_GZ_MODEL=x500
+      - PX4_GZ_WORLD=${PX4_GZ_WORLD:-default}
+      - UAS_INSPECTION_ROOT=/home/uas/inspection
+      - DISPLAY=:1
+      - TMPDIR=/tmp
+      - CCACHE_TEMPDIR=/tmp/ccache-tmp
+      - NOVNC_RESOLUTION=1280x720
+      - NOVNC_DEPTH=16
+      # Gazebo in VNC: prefer software GL (set to 0 to try host GPU via /dev/dri).
+      - LIBGL_ALWAYS_SOFTWARE=0
+      - QT_QPA_PLATFORM=xcb
+      - GDK_BACKEND=x11
+      - QT_X11_NO_MITSHM=1
+
+    volumes:
+      - px4_build:/home/uas/PX4-Autopilot
+      - ./gazebo_simulation/worlds:/home/uas/gz_worlds:ro
+      - ./src:/home/uas/ros2_ws/src:ro
+      - ./rosbags:/home/uas/rosbags
+      - ./scripts:/home/uas/scripts:ro
+      - ./docker:/home/uas/docker:ro
+      - .:/home/uas/inspection:ro
+      - /dev/dri:/dev/dri
+
+    # devices:
+    #   - /dev/dri/card1:/dev/dri/card1
+    #   - /dev/dri/renderD128:/dev/dri/renderD128
+
+    command: [ "/home/uas/scripts/simulation/novnc_sitl_launch.sh" ]
+
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+# ─────────────────────────────────────────────────────────
+#  Named volumes
+# ─────────────────────────────────────────────────────────
+volumes:
+  # PX4-Autopilot clone + compiled binaries persist here.
+  # Only cloned/compiled once via bootstrap_px4.sh.
+  px4_build:
+    driver: local

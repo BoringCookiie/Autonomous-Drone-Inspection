@@ -1,11 +1,21 @@
-# Knowledge-Grounded Zero-Shot Defect Inspection with Confidence-Triggered Revisit Flight for Autonomous UAV Monitoring of Earthen Heritage Architecture
+# Autonomous UAV Inspection of Earthen Heritage Architecture
 
 [![ROS2](https://img.shields.io/badge/ROS2-Humble%2F%20Jazzy-blue.svg)](https://docs.ros.org/)
 [![PX4](https://img.shields.io/badge/PX4-Autopilot-red.svg)](https://px4.io/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-An end-to-end autonomous UAV defect inspection framework specifically tailored for earthen heritage architecture (e.g., mudbrick walls, rammed earth structures). The system combines decoupled waypoint camera captures, multi-backend AI defect detection (Raw VLM, RAG-grounded VLM, and YOLOv11), and a detector-agnostic confidence-triggered revisit flight loop with A* path planning.
+This repository is the unified successor to the original `droneit` PX4/Gazebo prototype. It preserves the validated flight, camera-bridge, rosbag, and navigation tools while adding the earthen-wall inspection package on top.
+
+The operational path is:
+
+```text
+PX4 SITL/Gazebo -> MAVROS -> camera bridge -> waypoint trigger
+    -> RGB capture -> detector -> ambiguous detection
+    -> revisit PoseArray -> migrated A* planner
+```
+
+The VLM and trained-model backends are selectable, but require the corresponding model/data assets. Without those assets the package runs its explicit structural fallback detectors; fallback output must not be used as research results.
 
 ---
 
@@ -49,19 +59,22 @@ An end-to-end autonomous UAV defect inspection framework specifically tailored f
 
 ---
 
-## 📁 Repository Directory Structure
+## Repository Directory Structure
 
 ```
 Autonomous-Drone-Inspection/
-├── docker/                 # Container definitions & startup scripts
-├── docs/                   # System architecture & setup documentation
-├── data/                   # Dataset manifests (SDNET2018, MBDD2025, evaluation set)
-├── gazebo_simulation/      # Gazebo worlds, SDF mudbrick models & procedural crack textures
+├── docker/                 # Unified PX4/Gazebo/ROS2 image and Compose stack
+├── docs/                   # Current documentation and migrated legacy notes
+├── data/                   # Dataset locations and evaluation assets
+├── gazebo_simulation/      # PX4 worlds, earthen facade, and legacy obstacle worlds
 ├── knowledge_base/         # Defect taxonomy JSON, prompts YAML & reference crops
 ├── models/                 # Cached CLIP embeddings & trained YOLO weights
 ├── results/                # 6-condition sweep logs, Table 4 summaries & Figure 6 plots
-├── rosbags/                # ROS2 flight recording bags
-├── scripts/                # Offline embedding builder, YOLO trainer, 6-condition sweep scripts
+├── rosbags/                # Flight bags, including migrated legacy evidence
+├── scripts/
+│   ├── simulation/         # PX4 launch, flight, camera bridge, and noVNC tools
+│   ├── navigation/         # RTAB-Map, OctoMap, A*, follower, and goal tools
+│   └── analysis/           # Real rosbag telemetry analyzer
 └── src/
     └── uas_earthen_inspection/   # Main ROS2 Python package
         ├── config/               # Parameters configuration (ambiguity thresholds, standoff math)
@@ -71,23 +84,39 @@ Autonomous-Drone-Inspection/
 
 ---
 
-## 🚀 Quick Start Guide
+## Quick Start Guide
 
 ### 1. Build ROS2 Workspace
 ```bash
 cd Autonomous-Drone-Inspection
-colcon build --symlink-install --packages-select uas_earthen_inspection
-source install/setup.bash
+docker compose --project-directory . -f docker/docker-compose.yml --profile sim build sim_stack
+docker compose --project-directory . -f docker/docker-compose.yml --profile sim up -d --force-recreate sim_stack
+docker exec -it uas_sim bash -lc '/home/uas/docker/bootstrap_px4.sh'
 ```
 
-### 2. Pre-compute CLIP Knowledge Base Embeddings (Person 1)
+### 2. Build the ROS workspace
+```bash
+docker exec -it uas_sim bash -lc '/home/uas/scripts/build_workspace.sh'
+```
+
+### 3. Run the migrated flight and inspection stack
+```bash
+./docker/launch_obstacle_stack.sh --no-attach
+```
+
+For the complete navigation orchestration, use:
+```bash
+./run_autonomous_navigation.sh 8.0 0.5 1.5
+```
+
+### 4. Pre-compute CLIP knowledge-base embeddings
 ```bash
 python scripts/build_clip_embeddings.py \
     --ontology knowledge_base/defect_ontology.json \
     --output models/embeddings/clip_kb_embeddings.pt
 ```
 
-### 3. Launch Inspection Pipeline (3x2 Matrix Setup)
+### 5. Launch the inspection pipeline independently
 ```bash
 # Example: Launching RAG VLM detector with Revisit Flight Loop
 ros2 launch uas_earthen_inspection inspection_pipeline.launch.py \
@@ -95,13 +124,20 @@ ros2 launch uas_earthen_inspection inspection_pipeline.launch.py \
     flight_strategy:=revisit
 ```
 
-### 4. Run Full 6-Condition Automated Evaluation Sweep
+### 6. Run the evaluation tooling
 ```bash
-python scripts/run_6condition_sweep.py --output-dir results/sweeps
+python scripts/run_6condition_sweep.py --mock --output-dir results/sweeps
 python scripts/generate_table4_figure6.py --input-dir results/sweeps --output-dir results/
 ```
 
+`--mock` is only a smoke test. The real six-condition scorer still needs the hand-labeled evaluation set and detector inference implementation.
+
 ---
 
-## 📄 License & Attribution
+## Important Status
+
+The migrated PX4/MAVROS flight path is the validated baseline. Camera delivery, defect inference, dataset preparation, and six-condition metrics still require real model/data assets and runtime validation. Existing result files are generated examples, not measured experiments.
+
+## License
+
 Developed for Autonomous Earthen Heritage Inspection research. MIT License.
