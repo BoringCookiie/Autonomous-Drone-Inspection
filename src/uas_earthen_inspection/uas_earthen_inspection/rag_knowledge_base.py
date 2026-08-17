@@ -40,7 +40,7 @@ class RAGKnowledgeBase:
         # 1. Load defect ontology taxonomy metadata JSON
         self.defect_classes = self.load_knowledge_base(self.ontology_path)
 
-        # 2. Load pre-computed offline KB feature embeddings with weights_only=True
+        # 2. Load pre-computed offline KB feature embeddings
         self.kb_embeddings = self._load_cached_embeddings()
 
         # 3. Initialize HuggingFace CLIP image processor for live frame encoding ONLY
@@ -124,7 +124,18 @@ class RAGKnowledgeBase:
         if self.clip_model is not None and self.clip_processor is not None:
             inputs = self.clip_processor(images=pil_img, return_tensors="pt").to(self.device)
             with torch.no_grad():
-                image_features = self.clip_model.get_image_features(**inputs)
+                image_outputs = self.clip_model.get_image_features(**inputs)
+
+                # Robustly extract feature tensor from transformers output object
+                if hasattr(image_outputs, "image_embeds"):
+                    image_features = image_outputs.image_embeds
+                elif hasattr(image_outputs, "pooler_output"):
+                    image_features = image_outputs.pooler_output
+                elif isinstance(image_outputs, torch.Tensor):
+                    image_features = image_outputs
+                else:
+                    image_features = image_outputs[0]
+
                 return F.normalize(image_features, p=2, dim=-1)
         else:
             mock_vec = torch.randn(1, 512, device=self.device)

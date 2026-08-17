@@ -2,16 +2,10 @@
 
 raw_vlm_prompt: |
   Inspect the provided image of an earthen heritage architectural wall for defects (e.g., structural_crack, surface_erosion, moisture_stain).
-  You MUST format your output strictly using spatial grounding tags:
-  <box>[ymin, xmin, ymax, xmax]</box> {class_name} Confidence: {score}
+  Output strictly in this format: [ymin, xmin, ymax, xmax] {class_name} Confidence: {score}
 
 rag_vlm_prompt: |
-  You are an expert heritage conservator analyzing earthen architectural defects.
+  Context from Earthen Architecture Knowledge Base: {retrieved_context}.
 
-  Domain Knowledge Grounding Context:
-  {retrieved_context}
-
-  Task:
-  Examine the image carefully. Identify architectural defects by comparing with the Domain Knowledge Grounding Context above.
-  You MUST format your detection output strictly using spatial grounding tags:
-  <box>[ymin, xmin, ymax, xmax]</box> {class_name} Confidence: {score}
+  Analyze the image using this context. If the defect matches the context, use the context's classification name.
+  Output strictly in this format: [ymin, xmin, ymax, xmax] {class_name} Confidence: {score}

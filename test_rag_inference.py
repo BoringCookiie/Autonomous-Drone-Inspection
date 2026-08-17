@@ -7,7 +7,7 @@ Author: AI & Robotics Engineer
 Description:
     1. Loads cached CLIP embeddings (`models/embeddings/clip_kb_embeddings.pt`) and ontology (`knowledge_base/defect_ontology.json`).
     2. Embeds `test_crack.jpg` using HuggingFace CLIP (`openai/clip-vit-base-patch32`) and retrieves top-1 domain defect context.
-    3. Formulates RAG-grounded spatial prompt for 4-bit quantized Qwen2.5-VL-3B-Instruct.
+    3. Formulates RAG-grounded spatial prompt enforcing context classification name mapping.
     4. Measures latency, peak GPU VRAM allocation, and extracts spatial bounding box coordinates.
 """
 
@@ -73,6 +73,7 @@ def run_rag_verification_test(image_path: str = "test_crack.jpg"):
         print(f"     Retrieved Defect Class : [{retrieved_name}] (Cosine Similarity: {similarity_score:.4f})")
         print(f"     Knowledge Description  : '{retrieved_desc}'")
     else:
+        retrieved_name = "Structural Crack"
         retrieved_desc = "Linear structural crack fracture on earthen mudbrick architecture."
         print(f"   Fallback description used: '{retrieved_desc}'")
 
@@ -104,12 +105,12 @@ def run_rag_verification_test(image_path: str = "test_crack.jpg"):
         vram_loaded_mb = torch.cuda.memory_allocated(0) / (1024**2)
         print(f"[VRAM POST-LOAD] Model VRAM Footprint: {vram_loaded_mb:.2f} MB")
 
-    # 5. Formulate Grounded Prompt
+    # 5. Formulate Grounded Prompt with Classification Name Constraint
     print(f"\n[STEP 4] Constructing RAG-Grounded Spatial Prompt...")
     grounded_prompt = (
-        f"Context from Earthen Architecture Knowledge Base: {retrieved_desc}. \n\n"
-        f"Detect any cracks or defects in this image. "
-        f"Output strictly in this format: <box>[ymin, xmin, ymax, xmax]</box> {{class_name}} Confidence: {{score}}"
+        f"Context from Earthen Architecture Knowledge Base: {retrieved_name} - {retrieved_desc}. \n\n"
+        f"Analyze the image using this context. If the defect matches the context, use the context's classification name. "
+        f"Output strictly in this format: [ymin, xmin, ymax, xmax] {{class_name}} Confidence: {{score}}"
     )
 
     # 6. Execute RAG-Grounded Inference
@@ -149,17 +150,19 @@ def run_rag_verification_test(image_path: str = "test_crack.jpg"):
 
     # 7. Regex Coordinate Extraction
     print(f"\n[STEP 6] Running Spatial Bounding Box Regex Extraction...")
-    regex_pattern = r"<box>\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\](?:\s*</box>)?\s*([a-zA-Z0-9_\-]+)\s*(?:Confidence:?\s*([\d.]+))?"
+    regex_pattern = r"(?:<box>)?\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\](?:\s*</box>)?\s*(?:\{([^}]+)\}|([^{\n]+?))\s*(?:Confidence:?\s*([\d.]+))?"
     matches = re.findall(regex_pattern, raw_output, re.DOTALL | re.IGNORECASE)
 
     if matches:
         for idx, match in enumerate(matches, 1):
-            ymin, xmin, ymax, xmax, class_name, conf_str = match
+            ymin, xmin, ymax, xmax, label_braced, label_unbraced, conf_str = match
             coords = [int(ymin), int(xmin), int(ymax), int(xmax)]
             score = float(conf_str) if conf_str else 0.95
+            raw_label = label_braced if label_braced else label_unbraced
+            clean_label = raw_label.strip()
 
             print(f"\n   RAG Detection #{idx}:")
-            print(f"     Grounding Defect Class : {class_name.strip()}")
+            print(f"     Grounding Defect Class : {clean_label}")
             print(f"     Confidence Score C    : {score:.4f}")
             print(f"     BBox [ymin, xmin, ymax, xmax]: {coords}")
     else:

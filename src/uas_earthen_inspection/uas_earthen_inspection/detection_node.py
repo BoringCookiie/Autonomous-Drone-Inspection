@@ -7,8 +7,8 @@ Author: Person 1 (AI / VLM Lead)
 Description:
     Implements 4-bit quantized Qwen/Qwen2.5-VL-3B-Instruct vision-language model inference
     with dynamic backend selection (`raw_vlm`, `rag_vlm`, `yolo`).
-    Enforces a strict spatial output format `<box>[ymin, xmin, ymax, xmax]</box> {label} Confidence: {score}`
-    and resilient regex parsing into vision_msgs/Detection2DArray ROS2 messages.
+    Uses RAG domain context grounding to enforce context classification names and outputs
+    [ymin, xmin, ymax, xmax] {class_name} Confidence: {score} published to vision_msgs/Detection2DArray.
 """
 
 import rclpy
@@ -48,7 +48,7 @@ class BaseDetector(ABC):
 
 class Qwen25VLDetector(BaseDetector):
     """
-    Qwen2.5-VL 4-Bit Quantized Vision-Language Model Detector with Spatial Box Parsing.
+    Qwen2.5-VL 4-Bit Quantized Vision-Language Model Detector with Context-Grounded Spatial Box Parsing.
     """
 
     MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
@@ -69,7 +69,6 @@ class Qwen25VLDetector(BaseDetector):
         try:
             from transformers import BitsAndBytesConfig, AutoProcessor
 
-            # 4-bit BitsAndBytes quantization config
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16,
@@ -105,29 +104,26 @@ class Qwen25VLDetector(BaseDetector):
             self.processor = None
 
     def construct_prompt(self, cv_image: np.ndarray) -> str:
-        """Constructs prompt enforcing strict spatial grounding format: <box>[ymin, xmin, ymax, xmax]</box> {label} Confidence: {score}"""
+        """Constructs prompt enforcing strict spatial grounding format: [ymin, xmin, ymax, xmax] {class_name} Confidence: {score}"""
         if self.mode == "rag_vlm" and self.rag_kb is not None:
             # Retrieve top-k context from pre-computed RAG Knowledge Base
-            top_k_defects = self.rag_kb.retrieve_context(cv_image, top_k=2)
-            context_str = "\n".join([
-                f"- {d['name']}: {d['description']}"
-                for d in top_k_defects
-            ])
+            top_k_defects = self.rag_kb.retrieve_context(cv_image, top_k=1)
+            if top_k_defects:
+                top_d = top_k_defects[0]
+                retrieved_context = f"{top_d['name']} - {top_d['description']}"
+            else:
+                retrieved_context = "Structural Crack - Linear structural crack fracture on earthen mudbrick architecture."
 
             prompt = (
-                f"You are an expert heritage conservator analyzing an earthen architectural wall.\n"
-                f"Domain Knowledge Grounding Context:\n{context_str}\n\n"
-                f"Examine the image carefully. Detect all defect bounding boxes (structural_crack, surface_erosion, moisture_stain).\n"
-                f"You MUST format your output strictly as:\n"
-                f"<box>[ymin, xmin, ymax, xmax]</box> {{class_name}} Confidence: {{score}}\n"
+                f"Context from Earthen Architecture Knowledge Base: {retrieved_context}. \n\n"
+                f"Analyze the image using this context. If the defect matches the context, use the context's classification name. "
+                f"Output strictly in this format: [ymin, xmin, ymax, xmax] {{class_name}} Confidence: {{score}}"
             )
         else:
             # Generic Zero-shot Prompt
             prompt = (
-                f"Inspect this earthen heritage architectural wall image for structural defects.\n"
-                f"Identify defects like structural_crack, surface_erosion, or moisture_stain.\n"
-                f"You MUST format your output strictly as:\n"
-                f"<box>[ymin, xmin, ymax, xmax]</box> {{class_name}} Confidence: {{score}}\n"
+                f"Inspect this earthen heritage architectural wall image for structural defects (e.g., structural_crack, surface_erosion, moisture_stain).\n"
+                f"Output strictly in this format: [ymin, xmin, ymax, xmax] {{class_name}} Confidence: {{score}}"
             )
         return prompt
 
@@ -163,7 +159,7 @@ class Qwen25VLDetector(BaseDetector):
         if self.mode == "rag_vlm":
             return [{
                 'bbox': [int(w * 0.25), int(h * 0.35), int(w * 0.55), int(h * 0.65)],
-                'class_name': 'structural_crack',
+                'class_name': 'Surface Erosion',
                 'confidence': 0.86
             }]
         else:
@@ -176,55 +172,32 @@ class Qwen25VLDetector(BaseDetector):
     def parse_vlm_response(self, text: str, img_w: int, img_h: int) -> list:
         """
         Resilient parsing supporting:
-        1. Spatial tag format: <box>[ymin, xmin, ymax, xmax]</box> {class_name} Confidence: {score}
-        2. JSON array format: [{"bbox": [ymin, xmin, ymax, xmax], "class_name": "...", "confidence": 0.85}]
+        1. Spatial format: [ymin, xmin, ymax, xmax] {class_name} Confidence: {score} or <box>...</box>
+        2. Cleanly extracts label inside {class_name}
         """
         parsed_detections = []
 
-        # 1. Try spatial tag regex matching: <box>[ymin, xmin, ymax, xmax]</box> label Confidence: score
-        box_pattern = r"<box>\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]\s*</box>\s*([a-zA-Z0-9_\-]+)(?:\s*Confidence:\s*([\d.]+))?"
-        matches = re.findall(box_pattern, text, re.IGNORECASE)
+        box_pattern = r"(?:<box>)?\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\](?:\s*</box>)?\s*(?:\{([^}]+)\}|([^{}\n]+))\s*(?:Confidence:?\s*([\d.]+))?"
+        matches = re.findall(box_pattern, text, re.DOTALL | re.IGNORECASE)
 
         if matches:
             for match in matches:
-                ymin_raw, xmin_raw, ymax_raw, xmax_raw, label, conf_raw = match
+                ymin_raw, xmin_raw, ymax_raw, xmax_raw, label_braced, label_unbraced, conf_raw = match
                 ymin = max(0, min(img_h, int(ymin_raw)))
                 xmin = max(0, min(img_w, int(xmin_raw)))
                 ymax = max(0, min(img_h, int(ymax_raw)))
                 xmax = max(0, min(img_w, int(xmax_raw)))
                 conf = float(conf_raw) if conf_raw else 0.85
 
-                parsed_detections.append({
-                    'bbox': [xmin, ymin, xmax, ymax],
-                    'class_name': label.strip(),
-                    'confidence': min(1.0, max(0.0, conf))
-                })
-            return parsed_detections
-
-        # 2. Fallback to JSON array regex matching
-        try:
-            json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-            json_str = json_match.group(1) if json_match else text
-            data = json.loads(json_str)
-
-            for item in data:
-                bbox = item.get('bbox', [0, 0, img_w, img_h])
-                cls_name = item.get('class_name', 'structural_crack')
-                conf = float(item.get('confidence', 0.8))
-
-                xmin = max(0, min(img_w, int(bbox[0])))
-                ymin = max(0, min(img_h, int(bbox[1])))
-                xmax = max(0, min(img_w, int(bbox[2])))
-                ymax = max(0, min(img_h, int(bbox[3])))
+                raw_label = label_braced if label_braced else label_unbraced
+                clean_label = raw_label.strip()
 
                 parsed_detections.append({
                     'bbox': [xmin, ymin, xmax, ymax],
-                    'class_name': cls_name,
+                    'class_name': clean_label,
                     'confidence': min(1.0, max(0.0, conf))
                 })
             return parsed_detections
-        except Exception:
-            pass
 
         # Default fallback box if text cannot be parsed
         return [{
@@ -273,7 +246,7 @@ class YOLOv11Detector(BaseDetector):
 
 class DetectionNode(Node):
     """
-    ROS2 Node for AI Defect Detection with 4-bit Qwen2.5-VL and Strict Grounding Parsing.
+    ROS2 Node for AI Defect Detection with 4-bit Qwen2.5-VL and RAG Context Classification.
     """
 
     def __init__(self):

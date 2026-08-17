@@ -18,6 +18,20 @@ import torch.nn.functional as F
 from PIL import Image
 
 
+def extract_tensor_features(output_obj) -> torch.Tensor:
+    """Extracts raw PyTorch tensor from transformers output object."""
+    if hasattr(output_obj, "image_embeds"):
+        return output_obj.image_embeds
+    elif hasattr(output_obj, "text_embeds"):
+        return output_obj.text_embeds
+    elif hasattr(output_obj, "pooler_output"):
+        return output_obj.pooler_output
+    elif isinstance(output_obj, torch.Tensor):
+        return output_obj
+    else:
+        return output_obj[0]
+
+
 def build_embeddings(
     ontology_path: str = "knowledge_base/defect_ontology.json",
     ref_crops_dir: str = "knowledge_base/ref_crops",
@@ -67,7 +81,8 @@ def build_embeddings(
         if has_transformers:
             inputs = processor(text=[prompt], return_tensors="pt", padding=True).to(device)
             with torch.no_grad():
-                text_features = model.get_text_features(**inputs)
+                text_outputs = model.get_text_features(**inputs)
+                text_features = extract_tensor_features(text_outputs)
                 text_features = F.normalize(text_features, p=2, dim=-1)
         else:
             text_features = torch.randn(1, 512, device=device)
@@ -83,7 +98,8 @@ def build_embeddings(
                     if has_transformers:
                         img_inputs = processor(images=pil_img, return_tensors="pt").to(device)
                         with torch.no_grad():
-                            img_feat = model.get_image_features(**img_inputs)
+                            img_outputs = model.get_image_features(**img_inputs)
+                            img_feat = extract_tensor_features(img_outputs)
                             img_feat = F.normalize(img_feat, p=2, dim=-1)
                             crop_features_list.append(img_feat)
                 except Exception as img_err:
