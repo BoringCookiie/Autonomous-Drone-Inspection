@@ -5,10 +5,11 @@ Core AI Defect Detection ROS2 Node with 4-bit Quantized Qwen2.5-VL and Strict Gr
 
 Author: Person 1 (AI / VLM Lead)
 Description:
-    Implements 4-bit quantized Qwen/Qwen2.5-VL-3B-Instruct vision-language model inference
-    with dynamic backend selection (`raw_vlm`, `rag_vlm`, `yolo`).
-    Uses RAG domain context grounding to enforce context classification names and outputs
-    [ymin, xmin, ymax, xmax] {class_name} Confidence: {score} published to vision_msgs/Detection2DArray.
+    ROS2 Node wrapping the verified RAG-VLM inference pipeline.
+    Subscribes to live camera RGB feed (e.g. `/camera/image_raw` or `/inspection/captured_frame`),
+    processes the frame through 4-bit quantized Qwen2.5-VL-3B-Instruct with CLIP RAG domain context,
+    and publishes detected defect bounding boxes and classification scores as `vision_msgs/msg/Detection2DArray`
+    messages to `/inspection/detections`.
 """
 
 import rclpy
@@ -53,7 +54,7 @@ class Qwen25VLDetector(BaseDetector):
 
     MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
 
-    def __init__(self, mode: str = "raw_vlm", rag_kb: RAGKnowledgeBase = None):
+    def __init__(self, mode: str = "rag_vlm", rag_kb: RAGKnowledgeBase = None):
         self.mode = mode  # 'raw_vlm' or 'rag_vlm'
         self.rag_kb = rag_kb
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -246,7 +247,8 @@ class YOLOv11Detector(BaseDetector):
 
 class DetectionNode(Node):
     """
-    ROS2 Node for AI Defect Detection with 4-bit Qwen2.5-VL and RAG Context Classification.
+    ROS2 Node for AI Defect Detection wrapping RAG-VLM / YOLO backends.
+    Subscribes to live UAV camera feed and publishes vision_msgs/msg/Detection2DArray.
     """
 
     def __init__(self):
@@ -254,7 +256,7 @@ class DetectionNode(Node):
 
         # Declare parameters
         self.declare_parameter('detector_backend', 'rag_vlm')  # 'raw_vlm' | 'rag_vlm' | 'yolo'
-        self.declare_parameter('captured_frame_topic', '/inspection/captured_frame')
+        self.declare_parameter('captured_frame_topic', '/camera/image_raw')
         self.declare_parameter('detections_topic', '/inspection/detections')
         self.declare_parameter('ontology_json_path', 'knowledge_base/defect_ontology.json')
         self.declare_parameter('clip_embeddings_path', 'models/embeddings/clip_kb_embeddings.pt')
@@ -272,8 +274,8 @@ class DetectionNode(Node):
         embeddings_path = self.get_parameter('clip_embeddings_path').value
         self.rag_kb = RAGKnowledgeBase(ontology_path, embeddings_path)
 
-        # Instantiate selected backend
-        self.get_logger().info(f"Initializing DetectionNode with backend: [{self.backend_type.upper()}]")
+        # Instantiate selected backend detector
+        self.get_logger().info(f"[DetectionNode] Initializing detector backend: [{self.backend_type.upper()}]")
 
         if self.backend_type in ['raw_vlm', 'rag_vlm']:
             self.detector = Qwen25VLDetector(mode=self.backend_type, rag_kb=self.rag_kb)
@@ -291,18 +293,21 @@ class DetectionNode(Node):
             Detection2DArray, self.detections_topic, 10
         )
 
-        self.get_logger().info(f"DetectionNode ready. Listening on {self.frame_topic}")
+        self.get_logger().info(f"[DetectionNode] Subscribed to camera feed: '{self.frame_topic}'")
+        self.get_logger().info(f"[DetectionNode] Publishing detections to: '{self.detections_topic}'")
 
     def frame_callback(self, msg: Image):
-        """Processes captured frame through configured backend and publishes vision_msgs detections."""
+        """
+        Callback processing live camera frames from ROS2 topic into vision_msgs/msg/Detection2DArray.
+        """
         try:
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except CvBridgeError as e:
-            self.get_logger().error(f"CV Bridge Error: {e}")
+            self.get_logger().error(f"CV Bridge Conversion Error: {e}")
             return
 
         raw_detections = self.detector.detect(cv_img)
-        self.get_logger().info(f"[{self.backend_type.upper()}] Detected {len(raw_detections)} defect(s).")
+        self.get_logger().info(f"[{self.backend_type.upper()}] Detected {len(raw_detections)} defect(s) in frame.")
 
         detection_array_msg = Detection2DArray()
         detection_array_msg.header = msg.header
@@ -325,7 +330,7 @@ class DetectionNode(Node):
             detection_array_msg.detections.append(d2d)
 
             self.get_logger().info(
-                f"  -> Class: '{det['class_name']}' | Conf C: {det['confidence']:.2f} | BBox: {det['bbox']}"
+                f"  -> Defect Class: '{det['class_name']}' | Conf C: {det['confidence']:.2f} | BBox Center: ({d2d.bbox.center.position.x:.1f}, {d2d.bbox.center.position.y:.1f}), Size: ({d2d.bbox.size_x:.1f}x{d2d.bbox.size_y:.1f})"
             )
 
         self.pub_detections.publish(detection_array_msg)
