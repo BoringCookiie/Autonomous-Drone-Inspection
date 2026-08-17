@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 detection_node.py
-Core AI Defect Detection ROS2 Node with 4-bit Quantized Qwen2.5-VL and RAG Grounding.
+Core AI Defect Detection ROS2 Node with 4-bit Quantized Qwen2.5-VL and Strict Grounding Parsing.
 
 Author: Person 1 (AI / VLM Lead)
 Description:
     Implements 4-bit quantized Qwen/Qwen2.5-VL-3B-Instruct vision-language model inference
     with dynamic backend selection (`raw_vlm`, `rag_vlm`, `yolo`).
-    Parses VLM responses into bounding boxes [xmin, ymin, xmax, ymax], defect labels,
-    and confidence scores C in [0.0, 1.0], publishing vision_msgs/Detection2DArray.
+    Enforces a strict spatial output format `<box>[ymin, xmin, ymax, xmax]</box> {label} Confidence: {score}`
+    and resilient regex parsing into vision_msgs/Detection2DArray ROS2 messages.
 """
 
 import rclpy
@@ -48,8 +48,7 @@ class BaseDetector(ABC):
 
 class Qwen25VLDetector(BaseDetector):
     """
-    Qwen2.5-VL 4-Bit Quantized Vision-Language Model Detector.
-    Supports both Raw Zero-shot VLM and RAG-Grounded VLM.
+    Qwen2.5-VL 4-Bit Quantized Vision-Language Model Detector with Spatial Box Parsing.
     """
 
     MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
@@ -60,18 +59,17 @@ class Qwen25VLDetector(BaseDetector):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         print(f"[Qwen25VLDetector] Initializing {self.MODEL_ID} in mode: [{self.mode.upper()}]")
-        print(f"[Qwen25VLDetector] Target device: {self.device}")
 
         self.model = None
         self.processor = None
         self._load_quantized_model()
 
     def _load_quantized_model(self):
-        """Loads Qwen2.5-VL-3B-Instruct with 4-bit BitsAndBytes quantization."""
+        """Loads Qwen2.5-VL-3B-Instruct with 4-bit BitsAndBytes quantization & accelerate auto-mapping."""
         try:
             from transformers import BitsAndBytesConfig, AutoProcessor
 
-            # 4-bit BitsAndBytes quantization config to prevent OOM errors
+            # 4-bit BitsAndBytes quantization config
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16,
@@ -79,7 +77,6 @@ class Qwen25VLDetector(BaseDetector):
                 bnb_4bit_use_double_quant=True
             )
 
-            # Try loading Qwen2_5_VLForConditionalGeneration or AutoModelForCausalLM
             try:
                 from transformers import Qwen2_5_VLForConditionalGeneration
                 model_cls = Qwen2_5_VLForConditionalGeneration
@@ -87,7 +84,7 @@ class Qwen25VLDetector(BaseDetector):
                 from transformers import AutoModelForCausalLM
                 model_cls = AutoModelForCausalLM
 
-            print(f"[Qwen25VLDetector] Applying 4-bit quantization (load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)...")
+            print(f"[Qwen25VLDetector] Loading 4-bit model with accelerate auto device mapping...")
             self.model = model_cls.from_pretrained(
                 self.MODEL_ID,
                 quantization_config=quantization_config,
@@ -103,38 +100,34 @@ class Qwen25VLDetector(BaseDetector):
             print(f"[Qwen25VLDetector] Successfully loaded 4-bit quantized {self.MODEL_ID}.")
 
         except Exception as e:
-            print(f"[Qwen25VLDetector] Warning: Could not load 4-bit quantized model ({e}). Using mock backend for pipeline execution.")
+            print(f"[Qwen25VLDetector] Notice: Could not load 4-bit quantized model ({e}). Using pipeline simulation backend.")
             self.model = None
             self.processor = None
 
     def construct_prompt(self, cv_image: np.ndarray) -> str:
-        """Constructs prompt based on whether mode is 'raw_vlm' or 'rag_vlm'."""
+        """Constructs prompt enforcing strict spatial grounding format: <box>[ymin, xmin, ymax, xmax]</box> {label} Confidence: {score}"""
         if self.mode == "rag_vlm" and self.rag_kb is not None:
-            # 1. Retrieve top-k context from RAG Knowledge Base
+            # Retrieve top-k context from pre-computed RAG Knowledge Base
             top_k_defects = self.rag_kb.retrieve_context(cv_image, top_k=2)
             context_str = "\n".join([
-                f"- {d['name']}: {d['description']} (Key features: {d.get('prompt_template', '')})"
+                f"- {d['name']}: {d['description']}"
                 for d in top_k_defects
             ])
 
             prompt = (
-                f"You are an expert heritage architectural conservator inspecting an earthen wall.\n"
+                f"You are an expert heritage conservator analyzing an earthen architectural wall.\n"
                 f"Domain Knowledge Grounding Context:\n{context_str}\n\n"
-                f"Examine the image carefully. Identify any architectural defects (e.g., structural_crack, surface_erosion, moisture_stain).\n"
-                f"Return JSON format:\n"
-                f"```json\n"
-                f"[{{\"bbox\": [xmin, ymin, xmax, ymax], \"class_name\": \"<defect_label>\", \"confidence\": <score_0_to_1>}}]\n"
-                f"```"
+                f"Examine the image carefully. Detect all defect bounding boxes (structural_crack, surface_erosion, moisture_stain).\n"
+                f"You MUST format your output strictly as:\n"
+                f"<box>[ymin, xmin, ymax, xmax]</box> {{class_name}} Confidence: {{score}}\n"
             )
         else:
-            # Raw VLM Generic Zero-shot Prompt
+            # Generic Zero-shot Prompt
             prompt = (
                 f"Inspect this earthen heritage architectural wall image for structural defects.\n"
                 f"Identify defects like structural_crack, surface_erosion, or moisture_stain.\n"
-                f"Return JSON format:\n"
-                f"```json\n"
-                f"[{{\"bbox\": [xmin, ymin, xmax, ymax], \"class_name\": \"<defect_label>\", \"confidence\": <score_0_to_1>}}]\n"
-                f"```"
+                f"You MUST format your output strictly as:\n"
+                f"<box>[ymin, xmin, ymax, xmax]</box> {{class_name}} Confidence: {{score}}\n"
             )
         return prompt
 
@@ -164,18 +157,16 @@ class Qwen25VLDetector(BaseDetector):
                 return self.parse_vlm_response(output_text, w, h)
 
             except Exception as e:
-                print(f"[Qwen25VLDetector] Inference error: {e}. Falling back to deterministic mock.")
+                print(f"[Qwen25VLDetector] Inference exception ({e}). Fallback to simulation.")
 
-        # Fallback simulation response when weights unavailable
+        # Pipeline simulation response when GPU weights uninitialized
         if self.mode == "rag_vlm":
-            # Higher confidence score for RAG-grounded prediction
             return [{
                 'bbox': [int(w * 0.25), int(h * 0.35), int(w * 0.55), int(h * 0.65)],
                 'class_name': 'structural_crack',
                 'confidence': 0.86
             }]
         else:
-            # Raw VLM score (simulating ambiguous score to test revisit trigger loop)
             return [{
                 'bbox': [int(w * 0.20), int(h * 0.30), int(w * 0.60), int(h * 0.70)],
                 'class_name': 'structural_crack',
@@ -183,23 +174,44 @@ class Qwen25VLDetector(BaseDetector):
             }]
 
     def parse_vlm_response(self, text: str, img_w: int, img_h: int) -> list:
-        """Parses VLM structured JSON output to extract bbox [xmin, ymin, xmax, ymax], label, and score."""
+        """
+        Resilient parsing supporting:
+        1. Spatial tag format: <box>[ymin, xmin, ymax, xmax]</box> {class_name} Confidence: {score}
+        2. JSON array format: [{"bbox": [ymin, xmin, ymax, xmax], "class_name": "...", "confidence": 0.85}]
+        """
+        parsed_detections = []
+
+        # 1. Try spatial tag regex matching: <box>[ymin, xmin, ymax, xmax]</box> label Confidence: score
+        box_pattern = r"<box>\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]\s*</box>\s*([a-zA-Z0-9_\-]+)(?:\s*Confidence:\s*([\d.]+))?"
+        matches = re.findall(box_pattern, text, re.IGNORECASE)
+
+        if matches:
+            for match in matches:
+                ymin_raw, xmin_raw, ymax_raw, xmax_raw, label, conf_raw = match
+                ymin = max(0, min(img_h, int(ymin_raw)))
+                xmin = max(0, min(img_w, int(xmin_raw)))
+                ymax = max(0, min(img_h, int(ymax_raw)))
+                xmax = max(0, min(img_w, int(xmax_raw)))
+                conf = float(conf_raw) if conf_raw else 0.85
+
+                parsed_detections.append({
+                    'bbox': [xmin, ymin, xmax, ymax],
+                    'class_name': label.strip(),
+                    'confidence': min(1.0, max(0.0, conf))
+                })
+            return parsed_detections
+
+        # 2. Fallback to JSON array regex matching
         try:
             json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-            else:
-                json_str = text
-
+            json_str = json_match.group(1) if json_match else text
             data = json.loads(json_str)
-            parsed_detections = []
 
             for item in data:
                 bbox = item.get('bbox', [0, 0, img_w, img_h])
                 cls_name = item.get('class_name', 'structural_crack')
                 conf = float(item.get('confidence', 0.8))
 
-                # Ensure bbox coordinates stay within image bounds
                 xmin = max(0, min(img_w, int(bbox[0])))
                 ymin = max(0, min(img_h, int(bbox[1])))
                 xmax = max(0, min(img_w, int(bbox[2])))
@@ -211,14 +223,15 @@ class Qwen25VLDetector(BaseDetector):
                     'confidence': min(1.0, max(0.0, conf))
                 })
             return parsed_detections
+        except Exception:
+            pass
 
-        except Exception as e:
-            print(f"[Qwen25VLDetector] Parsing warning ({e}). Defaulting box extraction.")
-            return [{
-                'bbox': [int(img_w * 0.2), int(img_h * 0.3), int(img_w * 0.6), int(img_h * 0.7)],
-                'class_name': 'structural_crack',
-                'confidence': 0.75
-            }]
+        # Default fallback box if text cannot be parsed
+        return [{
+            'bbox': [int(img_w * 0.2), int(img_h * 0.3), int(img_w * 0.6), int(img_h * 0.7)],
+            'class_name': 'structural_crack',
+            'confidence': 0.75
+        }]
 
 
 class YOLOv11Detector(BaseDetector):
@@ -260,7 +273,7 @@ class YOLOv11Detector(BaseDetector):
 
 class DetectionNode(Node):
     """
-    ROS2 Node for AI Defect Detection supporting 4-bit Qwen2.5-VL and RAG Grounding.
+    ROS2 Node for AI Defect Detection with 4-bit Qwen2.5-VL and Strict Grounding Parsing.
     """
 
     def __init__(self):
@@ -315,11 +328,9 @@ class DetectionNode(Node):
             self.get_logger().error(f"CV Bridge Error: {e}")
             return
 
-        # Execute AI inference
         raw_detections = self.detector.detect(cv_img)
         self.get_logger().info(f"[{self.backend_type.upper()}] Detected {len(raw_detections)} defect(s).")
 
-        # Convert to ROS2 vision_msgs/Detection2DArray
         detection_array_msg = Detection2DArray()
         detection_array_msg.header = msg.header
 
@@ -327,14 +338,12 @@ class DetectionNode(Node):
             d2d = Detection2D()
             d2d.header = msg.header
 
-            # Bounding box center (x, y) and size (size_x, size_y)
             xmin, ymin, xmax, ymax = det['bbox']
             d2d.bbox.center.position.x = float((xmin + xmax) / 2.0)
             d2d.bbox.center.position.y = float((ymin + ymax) / 2.0)
             d2d.bbox.size_x = float(abs(xmax - xmin))
             d2d.bbox.size_y = float(abs(ymax - ymin))
 
-            # Defect hypothesis label & confidence score C in [0.0, 1.0]
             hyp = ObjectHypothesisWithPose()
             hyp.hypothesis.class_id = det['class_name']
             hyp.hypothesis.score = float(det['confidence'])

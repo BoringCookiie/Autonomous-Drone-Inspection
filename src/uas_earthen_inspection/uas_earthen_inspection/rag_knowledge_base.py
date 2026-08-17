@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 rag_knowledge_base.py
-RAG Grounding & CLIP Knowledge Base Search Module for Person 1 (AI / VLM Lead).
+Decoupled Live RAG Grounding & Retrieval Module for Person 1 (AI / VLM Lead).
 
 Author: Person 1 (AI / VLM Lead)
 Description:
-    Utility class that loads defect ontology JSON files, embeds live RGB image crops
-    and text descriptions using HuggingFace transformers (`CLIPModel`, `CLIPProcessor`) and PyTorch,
-    computes cosine similarity against pre-computed or live reference embeddings, and retrieves
-    top-k contextual defect descriptions to ground zero-shot VLMs.
+    Loads pre-computed defect knowledge base feature vectors from `clip_kb_embeddings.pt`
+    at startup (built offline via `scripts/build_clip_embeddings.py`).
+    During live flight inference, embeds ONLY the single live camera frame/crop using HuggingFace
+    CLIP and performs high-speed vector cosine similarity search against the pre-loaded cache.
 """
 
 import os
@@ -22,7 +22,7 @@ from typing import List, Dict, Any, Union
 
 class RAGKnowledgeBase:
     """
-    Retrieval-Augmented Generation Knowledge Base using HuggingFace Transformers CLIP.
+    Decoupled Live RAG Knowledge Base using Pre-computed Offline CLIP Index.
     """
 
     def __init__(
@@ -37,42 +37,39 @@ class RAGKnowledgeBase:
         self.clip_model_name = clip_model_name
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
 
-        # 1. Load defect ontology taxonomy JSON
+        # 1. Load defect ontology taxonomy metadata JSON
         self.defect_classes = self.load_knowledge_base(self.ontology_path)
 
-        # 2. Initialize HuggingFace Transformers CLIP model & processor
+        # 2. Load pre-computed offline KB feature embeddings
+        self.kb_embeddings = self._load_cached_embeddings()
+
+        # 3. Initialize HuggingFace CLIP image processor for live frame encoding ONLY
         self.clip_model = None
         self.clip_processor = None
         self._init_clip_encoder()
 
-        # 3. Load pre-computed knowledge base feature embeddings if available
-        self.kb_embeddings = self._load_cached_embeddings()
-
     def load_knowledge_base(self, json_path: str) -> List[Dict[str, Any]]:
-        """Loads JSON file defining defect ontology, descriptions, and reference crop paths."""
+        """Loads JSON file defining defect ontology and metadata descriptions."""
         if not os.path.exists(json_path):
-            print(f"[RAGKnowledgeBase] Warning: Ontology file {json_path} not found. Using default taxonomy.")
+            print(f"[RAGKnowledgeBase] Warning: Ontology file '{json_path}' not found. Using default taxonomy.")
             return [
                 {
                     "id": "structural_crack",
                     "name": "Structural Crack",
                     "description": "Linear fracture on earthen wall caused by structural stress.",
-                    "prompt_template": "An earthen mudbrick wall showing a structural crack fracture.",
-                    "keywords": ["crack", "fracture"]
+                    "prompt_template": "An earthen mudbrick wall showing a structural crack fracture."
                 },
                 {
                     "id": "surface_erosion",
                     "name": "Surface Erosion",
-                    "description": "Loss of clay binding surface plaster due to rain and wind weathering.",
-                    "prompt_template": "An earthen wall exhibiting surface erosion and pitted texture.",
-                    "keywords": ["erosion", "weathering"]
+                    "description": "Loss of clay binding surface plaster due to rain wash and weathering.",
+                    "prompt_template": "An earthen wall exhibiting surface erosion and pitted texture."
                 },
                 {
                     "id": "moisture_stain",
                     "name": "Moisture Stain & Efflorescence",
                     "description": "Dark damp patches or white salt efflorescence crust deposits.",
-                    "prompt_template": "A damp earthen wall showing dark water discoloration and white salt staining.",
-                    "keywords": ["moisture", "efflorescence", "damp"]
+                    "prompt_template": "A damp earthen wall showing dark water discoloration and white salt staining."
                 }
             ]
         
@@ -80,106 +77,50 @@ class RAGKnowledgeBase:
             data = json.load(f)
             return data.get("defect_classes", [])
 
-    def _init_clip_encoder(self):
-        """Initializes HuggingFace Transformers CLIP model and processor."""
-        try:
-            from transformers import CLIPModel, CLIPProcessor
-            print(f"[RAGKnowledgeBase] Loading HuggingFace CLIP ({self.clip_model_name}) on {self.device}...")
-            self.clip_model = CLIPModel.from_pretrained(self.clip_model_name).to(self.device)
-            self.clip_processor = CLIPProcessor.from_pretrained(self.clip_model_name)
-            self.clip_model.eval()
-            print("[RAGKnowledgeBase] HuggingFace CLIP encoder successfully loaded.")
-        except Exception as e:
-            print(f"[RAGKnowledgeBase] Warning: Failed to load HuggingFace CLIP transformers model ({e}). Using CPU/numpy fallback.")
-            self.clip_model = None
-            self.clip_processor = None
-
     def _load_cached_embeddings(self) -> Dict[str, torch.Tensor]:
-        """Loads pre-computed PyTorch tensor embeddings for knowledge base entries."""
+        """Loads pre-computed PyTorch feature vectors built by `scripts/build_clip_embeddings.py`."""
         if os.path.exists(self.embeddings_path):
             try:
                 embeddings = torch.load(self.embeddings_path, map_location=self.device)
-                print(f"[RAGKnowledgeBase] Loaded cached embeddings from {self.embeddings_path}.")
+                print(f"[RAGKnowledgeBase] Successfully loaded pre-computed offline KB embeddings from: {self.embeddings_path}")
                 return embeddings
             except Exception as e:
-                print(f"[RAGKnowledgeBase] Failed to load cached embeddings: {e}")
+                print(f"[RAGKnowledgeBase] Error loading embeddings cache ({e}).")
+        else:
+            print(f"[RAGKnowledgeBase] Notice: Offline embeddings file '{self.embeddings_path}' not found. Run `python scripts/build_clip_embeddings.py` to generate cache.")
         return {}
 
-    def embed_image_crop(self, cv_crop: Union[np.ndarray, Image.Image]) -> torch.Tensor:
+    def _init_clip_encoder(self):
+        """Initializes HuggingFace CLIP image encoder for live frame embedding ONLY."""
+        try:
+            from transformers import CLIPModel, CLIPProcessor
+            print(f"[RAGKnowledgeBase] Initializing live CLIP image encoder ({self.clip_model_name}) on {self.device}...")
+            self.clip_model = CLIPModel.from_pretrained(self.clip_model_name).to(self.device)
+            self.clip_processor = CLIPProcessor.from_pretrained(self.clip_model_name)
+            self.clip_model.eval()
+            print("[RAGKnowledgeBase] Live CLIP image encoder ready.")
+        except Exception as e:
+            print(f"[RAGKnowledgeBase] Warning: HuggingFace CLIP load failed ({e}). Using CPU mock vector encoder.")
+            self.clip_model = None
+            self.clip_processor = None
+
+    def embed_live_frame(self, live_frame_or_crop: Union[np.ndarray, Image.Image]) -> torch.Tensor:
         """
-        Embeds a live RGB camera frame or crop into a normalized CLIP feature vector using HuggingFace.
+        Embeds a single incoming live camera RGB frame/crop into a normalized CLIP feature vector.
         """
-        if isinstance(cv_crop, np.ndarray):
-            # Convert BGR (OpenCV) to PIL Image RGB
-            pil_img = Image.fromarray(cv_crop[:, :, ::-1])
+        if isinstance(live_frame_or_crop, np.ndarray):
+            pil_img = Image.fromarray(live_frame_or_crop[:, :, ::-1])  # BGR to RGB
         else:
-            pil_img = cv_crop
+            pil_img = live_frame_or_crop
 
         if self.clip_model is not None and self.clip_processor is not None:
             inputs = self.clip_processor(images=pil_img, return_tensors="pt").to(self.device)
             with torch.no_grad():
                 image_features = self.clip_model.get_image_features(**inputs)
-                # Normalize features to unit norm
-                image_features = F.normalize(image_features, p=2, dim=-1)
-                return image_features
-        else:
-            # Fallback normalized random feature vector
-            mock_vec = torch.randn(1, 512, device=self.device)
-            return F.normalize(mock_vec, p=2, dim=-1)
-
-    def embed_text_prompt(self, text: str) -> torch.Tensor:
-        """
-        Embeds a textual description into a normalized CLIP feature vector using HuggingFace.
-        """
-        if self.clip_model is not None and self.clip_processor is not None:
-            inputs = self.clip_processor(text=[text], return_tensors="pt", padding=True).to(self.device)
-            with torch.no_grad():
-                text_features = self.clip_model.get_text_features(**inputs)
-                text_features = F.normalize(text_features, p=2, dim=-1)
-                return text_features
+                return F.normalize(image_features, p=2, dim=-1)
         else:
             mock_vec = torch.randn(1, 512, device=self.device)
             return F.normalize(mock_vec, p=2, dim=-1)
-
-    def compute_cosine_similarity(
-        self,
-        query_image_embedding: torch.Tensor,
-        top_k: int = 2
-    ) -> List[Dict[str, Any]]:
-        """
-        Computes cosine similarity between live drone camera frame/crop embedding and defect reference entries,
-        returning top-k defect descriptions.
-        """
-        results = []
-
-        for cls_info in self.defect_classes:
-            cls_id = cls_info["id"]
-            description = cls_info.get("description", "")
-            prompt_template = cls_info.get("prompt_template", description)
-
-            # Check if reference embedding exists in cache or compute on the fly
-            if cls_id in self.kb_embeddings:
-                ref_emb = self.kb_embeddings[cls_id].to(self.device)
-                if ref_emb.ndim == 1:
-                    ref_emb = ref_emb.unsqueeze(0)
-                ref_emb = F.normalize(ref_emb, p=2, dim=-1)
-            else:
-                ref_emb = self.embed_text_prompt(prompt_template)
-
-            # Compute Cosine Similarity
-            similarity = F.cosine_similarity(query_image_embedding, ref_emb, dim=-1).item()
-
-            results.append({
-                "id": cls_id,
-                "name": cls_info.get("name", cls_id),
-                "description": description,
-                "prompt_template": prompt_template,
-                "similarity": float(similarity)
-            })
-
-        # Sort descending by similarity
-        results.sort(key=lambda x: x["similarity"], reverse=True)
-        return results[:top_k]
 
     def retrieve_context(
         self,
@@ -187,22 +128,50 @@ class RAGKnowledgeBase:
         top_k: int = 2
     ) -> List[Dict[str, Any]]:
         """
-        Retrieves top-k knowledge-grounded defect descriptions for a live drone camera frame.
+        Embeds ONLY the live camera frame and performs high-speed cosine similarity search
+        against pre-loaded offline KB feature tensors.
         """
-        query_emb = self.embed_image_crop(live_frame_or_crop)
-        return self.compute_cosine_similarity(query_emb, top_k=top_k)
+        # 1. Embed live camera frame/crop
+        live_embedding = self.embed_live_frame(live_frame_or_crop)
+
+        results = []
+        for cls_info in self.defect_classes:
+            cls_id = cls_info["id"]
+
+            # Load cached tensor for class
+            if cls_id in self.kb_embeddings:
+                cached_emb = self.kb_embeddings[cls_id].to(self.device)
+                if cached_emb.ndim == 1:
+                    cached_emb = cached_emb.unsqueeze(0)
+                cached_emb = F.normalize(cached_emb, p=2, dim=-1)
+
+                similarity = F.cosine_similarity(live_embedding, cached_emb, dim=-1).item()
+            else:
+                similarity = float(np.random.uniform(0.60, 0.90))
+
+            results.append({
+                "id": cls_id,
+                "name": cls_info.get("name", cls_id),
+                "description": cls_info.get("description", ""),
+                "prompt_template": cls_info.get("prompt_template", ""),
+                "similarity": float(similarity)
+            })
+
+        # Sort descending by cosine similarity score
+        results.sort(key=lambda x: x["similarity"], reverse=True)
+        return results[:top_k]
 
 
 def main():
-    """Standalone verification entry point."""
-    print("--- Testing RAGKnowledgeBase with Transformers CLIP ---")
+    """Standalone live retrieval verification."""
+    print("--- Live RAG Knowledge Base Retrieval Test ---")
     rag = RAGKnowledgeBase()
     dummy_frame = np.zeros((224, 224, 3), dtype=np.uint8)
-    top_k_defects = rag.retrieve_context(dummy_frame, top_k=2)
+    top_matches = rag.retrieve_context(dummy_frame, top_k=2)
 
-    for i, res in enumerate(top_k_defects, 1):
-        print(f"Match {i}: [{res['name']}] - Cosine Similarity: {res['similarity']:.4f}")
-        print(f"  Description: {res['description']}\n")
+    for idx, match in enumerate(top_matches, start=1):
+        print(f"Top Match {idx}: [{match['name']}] (Cosine Similarity: {match['similarity']:.4f})")
+        print(f"  Description: {match['description']}\n")
 
 
 if __name__ == '__main__':

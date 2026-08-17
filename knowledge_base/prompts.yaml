@@ -1,16 +1,17 @@
 # Prompt Templates for Vision-Language Models (Raw VLM & RAG VLM)
 
 raw_vlm_prompt: |
-  Inspect the provided image of an earthen heritage wall.
-  Identify any architectural defects present (e.g., Structural Crack, Surface Erosion, Moisture Stain).
-  Provide bounding box coordinates [ymin, xmin, ymax, xmax], label, and confidence score between 0.0 and 1.0.
+  Inspect the provided image of an earthen heritage architectural wall for defects (e.g., structural_crack, surface_erosion, moisture_stain).
+  You MUST format your output strictly using spatial grounding tags:
+  <box>[ymin, xmin, ymax, xmax]</box> {class_name} Confidence: {score}
 
 rag_vlm_prompt: |
-  You are an expert conservator analyzing earthen heritage architectural defects.
-  
-  Domain Knowledge Context:
+  You are an expert heritage conservator analyzing earthen architectural defects.
+
+  Domain Knowledge Grounding Context:
   {retrieved_context}
-  
+
   Task:
-  Examine the target image crop. Compare the features with the Domain Knowledge Context above.
-  Classify the defect into one of the known classes, specify bounding box coordinates [ymin, xmin, ymax, xmax], and output a confidence score C in [0.0, 1.0].
+  Examine the image carefully. Identify architectural defects by comparing with the Domain Knowledge Grounding Context above.
+  You MUST format your detection output strictly using spatial grounding tags:
+  <box>[ymin, xmin, ymax, xmax]</box> {class_name} Confidence: {score}

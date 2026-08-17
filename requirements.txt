@@ -1,0 +1,16 @@
+# Autonomous UAV Earthen Heritage Inspection Python Dependencies
+# AI/VLM Track (Person 1), YOLO Track (Person 2), ROS2 Sim Track (Person 3)
+
+torch>=2.0.0
+torchvision
+transformers>=4.37.0
+bitsandbytes>=0.41.0
+accelerate>=0.26.0
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+pillow>=9.5.0
+pyyaml>=6.0
+numpy>=1.23.0
+scipy>=1.10.0
+matplotlib>=3.7.0
+pandas>=2.0.0
