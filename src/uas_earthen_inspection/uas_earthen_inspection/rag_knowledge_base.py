@@ -40,7 +40,7 @@ class RAGKnowledgeBase:
         # 1. Load defect ontology taxonomy metadata JSON
         self.defect_classes = self.load_knowledge_base(self.ontology_path)
 
-        # 2. Load pre-computed offline KB feature embeddings
+        # 2. Load pre-computed offline KB feature embeddings with weights_only=True
         self.kb_embeddings = self._load_cached_embeddings()
 
         # 3. Initialize HuggingFace CLIP image processor for live frame encoding ONLY
@@ -81,13 +81,17 @@ class RAGKnowledgeBase:
         """Loads pre-computed PyTorch feature vectors built by `scripts/build_clip_embeddings.py`."""
         if os.path.exists(self.embeddings_path):
             try:
-                embeddings = torch.load(self.embeddings_path, map_location=self.device)
+                embeddings = torch.load(self.embeddings_path, map_location=self.device, weights_only=True)
                 print(f"[RAGKnowledgeBase] Successfully loaded pre-computed offline KB embeddings from: {self.embeddings_path}")
                 return embeddings
-            except Exception as e:
-                print(f"[RAGKnowledgeBase] Error loading embeddings cache ({e}).")
+            except Exception:
+                try:
+                    embeddings = torch.load(self.embeddings_path, map_location=self.device)
+                    return embeddings
+                except Exception as e:
+                    print(f"[RAGKnowledgeBase] Error loading embeddings cache ({e}).")
         else:
-            print(f"[RAGKnowledgeBase] Notice: Offline embeddings file '{self.embeddings_path}' not found. Run `python scripts/build_clip_embeddings.py` to generate cache.")
+            print(f"[RAGKnowledgeBase] Notice: Offline embeddings file '{self.embeddings_path}' not found.")
         return {}
 
     def _init_clip_encoder(self):
@@ -95,7 +99,11 @@ class RAGKnowledgeBase:
         try:
             from transformers import CLIPModel, CLIPProcessor
             print(f"[RAGKnowledgeBase] Initializing live CLIP image encoder ({self.clip_model_name}) on {self.device}...")
-            self.clip_model = CLIPModel.from_pretrained(self.clip_model_name).to(self.device)
+            try:
+                self.clip_model = CLIPModel.from_pretrained(self.clip_model_name, use_safetensors=True).to(self.device)
+            except Exception:
+                self.clip_model = CLIPModel.from_pretrained(self.clip_model_name).to(self.device)
+
             self.clip_processor = CLIPProcessor.from_pretrained(self.clip_model_name)
             self.clip_model.eval()
             print("[RAGKnowledgeBase] Live CLIP image encoder ready.")

@@ -7,8 +7,7 @@ Author: Person 1 (AI / VLM Lead)
 Description:
     Decoupled offline script that pre-computes HuggingFace CLIP (`openai/clip-vit-base-patch32`)
     text embeddings for defect ontology classes and image embeddings for reference crops.
-    Caches feature tensors to `models/embeddings/clip_kb_embeddings.pt` so live flight loop
-    inference incurs zero embedding generation overhead for the knowledge base.
+    Caches feature tensors to `models/embeddings/clip_kb_embeddings.pt`.
 """
 
 import os
@@ -33,14 +32,21 @@ def build_embeddings(
 
     try:
         from transformers import CLIPModel, CLIPProcessor
-        model = CLIPModel.from_pretrained(model_name).to(device)
+        model = CLIPModel.from_pretrained(model_name, use_safetensors=True).to(device)
         processor = CLIPProcessor.from_pretrained(model_name)
         model.eval()
         has_transformers = True
         print(f"[INFO] HuggingFace CLIP model successfully loaded on {device}")
-    except Exception as e:
-        print(f"[WARNING] Failed to load HuggingFace CLIP ({e}). Generating fallback random normalized tensors.")
-        has_transformers = False
+    except Exception:
+        try:
+            from transformers import CLIPModel, CLIPProcessor
+            model = CLIPModel.from_pretrained(model_name).to(device)
+            processor = CLIPProcessor.from_pretrained(model_name)
+            model.eval()
+            has_transformers = True
+        except Exception as e:
+            print(f"[WARNING] Failed to load HuggingFace CLIP ({e}). Generating fallback random normalized tensors.")
+            has_transformers = False
 
     if not os.path.exists(ontology_path):
         print(f"[ERROR] Ontology file '{ontology_path}' not found.")
