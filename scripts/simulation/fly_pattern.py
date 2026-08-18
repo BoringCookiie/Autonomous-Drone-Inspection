@@ -27,11 +27,12 @@ from typing import Any, Optional
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, ParamSet, ParamSetV2, SetMode
 from rcl_interfaces.msg import ParameterType
+from sensor_msgs.msg import Image
 
 # Integer params (SITL / noisy GPS / yaw preflight relaxation)
 _SITL_INT_PARAMS: dict[str, int] = {
@@ -140,9 +141,11 @@ class RosbagRecorder:
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.output_dir = root / f'fly_pattern_{stamp}'
 
-        pattern = r'.*camera.*|/uas1/state|/uas1/local_position/.*|/uas1/global_position/.*|/uas1/imu/.*|/uas1/battery|/diagnostics|/tf.*'
-        cmd = ['ros2', 'bag', 'record', '-o', str(self.output_dir), '--regex', pattern]
-        self._node.get_logger().info(f'Recording matching camera & telemetry topics to {self.output_dir}')
+        topics = self._topics()
+        cmd = ['ros2', 'bag', 'record', '-o', str(self.output_dir), *topics]
+        self._node.get_logger().info(
+            f'Recording {len(topics)} explicit camera & telemetry topics to {self.output_dir}'
+        )
 
         try:
             env = dict(os.environ)
@@ -225,7 +228,10 @@ def _pick_mavros_base(node: Node) -> str:
 
 def _pick_param_client(node: Node, base: str) -> Optional[tuple[Any, str]]:
     """Try param/set in the resolved MAVROS namespace, plus old /mavros-node compatibility paths."""
-    skip = os.environ.get('FLY_PATTERN_SKIP_PARAM', '0').lower() in ('1', 'true', 'yes')
+    # PX4 boot parameters are installed by bootstrap_px4.sh. Avoid the
+    # fragile MAVROS parameter round-trip by default; opt in explicitly when
+    # testing a different PX4 parameter set.
+    skip = os.environ.get('FLY_PATTERN_SKIP_PARAM', '1').lower() in ('1', 'true', 'yes')
     if skip:
         node.get_logger().info('Skipping MAVROS param push (FLY_PATTERN_SKIP_PARAM=1)')
         return None
@@ -247,6 +253,17 @@ def _pick_param_client(node: Node, base: str) -> Optional[tuple[Any, str]]:
     return None
 
 
+# ros_gz_bridge publishes camera images with RELIABLE QoS. Subscribing with
+# BEST_EFFORT (qos_profile_sensor_data) causes a QoS mismatch — zero frames
+# are delivered and fly_pattern.py hangs forever. Use a matching RELIABLE QoS.
+_CAMERA_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    durability=DurabilityPolicy.VOLATILE,
+)
+
+
 class SimpleFlyer(Node):
     def __init__(self) -> None:
         super().__init__('simple_flyer')
@@ -257,8 +274,12 @@ class SimpleFlyer(Node):
         self.mode_client = self.create_client(SetMode, f'{self._base}/set_mode')
         self.create_subscription(State, f'{self._base}/state', self._state_cb, 10)
         self.create_subscription(PoseStamped, f'{self._base}/local_position/pose', self._pos_cb, qos_profile_sensor_data)
+        self.create_subscription(Image, '/camera/color/image_raw', self._rgb_cb, _CAMERA_QOS)
+        self.create_subscription(Image, '/camera/depth/image_raw', self._depth_cb, _CAMERA_QOS)
         self.current_state: State | None = None
         self.has_local_pos = False
+        self.has_rgb_frame = False
+        self.has_depth_frame = False
 
         # Continuous background setpoint streamer (20 Hz)
         self.target_pose = PoseStamped()
@@ -278,6 +299,16 @@ class SimpleFlyer(Node):
 
     def _pos_cb(self, msg: PoseStamped) -> None:
         self.has_local_pos = True
+
+    def _rgb_cb(self, msg: Image) -> None:
+        if not self.has_rgb_frame:
+            self.get_logger().info(f'RGB frame received: {msg.width}x{msg.height} {msg.encoding}')
+        self.has_rgb_frame = True
+
+    def _depth_cb(self, msg: Image) -> None:
+        if not self.has_depth_frame:
+            self.get_logger().info(f'Depth frame received: {msg.width}x{msg.height} {msg.encoding}')
+        self.has_depth_frame = True
 
     def wait_for_position_estimate(self, timeout_sec: float = 30.0) -> bool:
         self.get_logger().info('Waiting for EKF2 position estimate on local_position/pose...')
@@ -401,16 +432,24 @@ class SimpleFlyer(Node):
         return self.current_state is not None and self.current_state.mode == mode
 
     def wait_for_camera_topics(self, timeout_sec: float = 30.0) -> bool:
-        self.get_logger().info('Waiting for camera topics before recording & takeoff...')
+        require_depth = os.environ.get('FLY_PATTERN_REQUIRE_DEPTH', '0').lower() in (
+            '1', 'true', 'yes'
+        )
+        self.get_logger().info(
+            'Waiting for live camera frames before recording & takeoff '
+            f'(depth required={require_depth})...'
+        )
         t_end = time.time() + timeout_sec
         while time.time() < t_end:
-            topics = [name for name, _ in self.get_topic_names_and_types()]
-            if any(t in topics for t in ('/camera', '/camera/color/image_raw', '/depth_camera', '/camera/depth/image_raw')):
-                self.get_logger().info('Camera topic detected and active!')
+            rclpy.spin_once(self, timeout_sec=0.1)
+            if self.has_rgb_frame and (not require_depth or self.has_depth_frame):
+                self.get_logger().info('Required camera streams are publishing live frames.')
                 return True
-            rclpy.spin_once(self, timeout_sec=0.5)
-            time.sleep(0.5)
-        self.get_logger().warn('Camera topics not detected within timeout; continuing anyway.')
+        self.get_logger().error(
+            'Camera readiness failed: '
+            f'rgb={self.has_rgb_frame}, depth={self.has_depth_frame}, '
+            f'depth_required={require_depth}'
+        )
         return False
 
     def fly_to(self, x: float, y: float, z: float, duration: float, yaw_rad: float = 1.5707963, desc: str = '') -> None:
@@ -429,7 +468,8 @@ class SimpleFlyer(Node):
 
         # Wait for EKF2 position estimate & camera topics before recording bag
         self.wait_for_position_estimate(timeout_sec=30.0)
-        self.wait_for_camera_topics(timeout_sec=25.0)
+        if not self.wait_for_camera_topics(timeout_sec=90.0):
+            raise RuntimeError('Required camera frames are not publishing; refusing to fly')
 
         self._recorder.start()
         try:
