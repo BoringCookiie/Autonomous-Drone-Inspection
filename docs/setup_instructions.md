@@ -56,10 +56,10 @@ docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash && ros2 topic hz
 Launch the inspection nodes after the workspace is built:
 
 ```bash
-  'source /opt/ros/humble/setup.bash && \
-   source /home/uas/ros2_ws/install/setup.bash && \
-   ros2 launch uas_earthen_inspection inspection_pipeline.launch.py \
-   detector_backend:=yolo flight_strategy:=revisit'
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash && \
+source /home/uas/ros2_ws/install/setup.bash && \
+ros2 launch uas_earthen_inspection inspection_pipeline.launch.py \
+detector_backend:=yolo flight_strategy:=revisit'
 ```
 
 The pipeline includes a MAVROS setpoint/pose adapter that publishes `/uav/waypoint_reached`, the per-waypoint capture node, the detector, and the revisit generator. The migrated A* planner subscribes to `/planner/revisit_waypoints`.
@@ -76,12 +76,23 @@ This starts the depth simulation, MAVROS, recording, RTAB-Map/OctoMap/navigation
 
 Place datasets in `data/`, trained weights in `models/yolo/`, and cached CLIP embeddings in `models/embeddings/`. The repository currently contains manifests and placeholders only. Do not interpret the committed example results as experimental measurements.
 
+For the complete command list, see [`docs/simulation_commands.md`](simulation_commands.md). For the integration contract between the simulation, RAG-VLM, and YOLOv11, see [`docs/person1_ai_vlm_yolo_integration.tex`](person1_ai_vlm_yolo_integration.tex).
+
+### AI backend status
+
+The current `uas_sim` image is the validated robotics runtime. It includes ROS2, PX4/Gazebo tooling, MAVROS, camera transport, rosbag2, OpenCV, and the existing YOLO runtime, but it does not include the teammate branch's Transformers, BitsAndBytes, or Accelerate dependencies. The RAG-VLM branch must be integrated without removing the waypoint trigger or canonical camera topics. Use the dedicated integration guide before enabling real VLM inference.
+
+The three detector backends share `/inspection/captured_frame` as their input and `/inspection/detections` as their output. The detector must run on waypoint captures, not on every 30 FPS camera frame.
+
 ## Diagnostics
 
 ```bash
 ./health_check.sh
-python3 scripts/analyze_rosbags.py --bag list
-python3 scripts/analyze_rosbags.py --bag latest --export-csv --export-video
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash && \
+python3 /home/uas/scripts/analysis/analyze_rosbags.py --bag list'
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash && \
+python3 /home/uas/scripts/analysis/analyze_rosbags.py --bag latest \
+--export-csv --export-video --video-topic /camera/color/image_raw'
 ```
 
 The analyzer reports the number of decoded video frames and whether the frames changed relative to the first frame. It exports only the canonical RGB recording by default: `/camera/color/image_raw` -> `analysis/camera_color_image_raw.mp4`. Do not inspect a raw Gazebo GUI topic or an old `camera.mp4` file. The bag recorder writes its selected bag path to `/home/uas/rosbags/.active_bag`, so the launcher analyzes the bag created by that flight rather than whichever bag happened to be newest.

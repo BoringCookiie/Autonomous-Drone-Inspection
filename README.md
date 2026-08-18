@@ -116,13 +116,18 @@ python scripts/build_clip_embeddings.py \
     --output models/embeddings/clip_kb_embeddings.pt
 ```
 
+This command requires the AI/VLM dependencies and a real CLIP model. Do not use the generated fallback tensors for reported experiments. See [`docs/simulation_commands.md`](docs/simulation_commands.md) for the current environment limitations.
+
 ### 5. Launch the inspection pipeline independently
 ```bash
-# Example: Launching RAG VLM detector with Revisit Flight Loop
+# Example: launching the currently runnable YOLO interface with revisit mode
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash && \
+source /home/uas/ros2_ws/install/setup.bash && \
 ros2 launch uas_earthen_inspection inspection_pipeline.launch.py \
-    detector_backend:=rag_vlm \
-    flight_strategy:=revisit
+detector_backend:=yolo flight_strategy:=revisit'
 ```
+
+The `raw_vlm` and `rag_vlm` interface names are present, but real Qwen/CLIP inference requires the dedicated AI/VLM environment described in the integration guide.
 
 ### 6. Run the evaluation tooling
 ```bash
@@ -131,6 +136,23 @@ python scripts/generate_table4_figure6.py --input-dir results/sweeps --output-di
 ```
 
 `--mock` is only a smoke test. The real six-condition scorer still needs the hand-labeled evaluation set and detector inference implementation.
+
+---
+
+## Current Simulation Command Reference
+
+The complete command reference for the validated PX4/Gazebo/MAVROS/camera setup is in [`docs/simulation_commands.md`](docs/simulation_commands.md). It covers:
+
+- Container build, PX4 bootstrap, and ROS2 workspace build.
+- GUI, headless, mono-camera, and RGB-D launches.
+- Gazebo and canonical ROS camera diagnostics.
+- Rosbag listing, CSV export, and authoritative RGB MP4 export.
+- Inspection pipeline launch for YOLO single-pass and revisit modes.
+- YOLOv11 training and model placement.
+- CLIP knowledge-base embedding generation.
+- Navigation, health checks, shutdown, and stale-process recovery.
+
+The teammate-facing architecture and integration contract for the Person 1 RAG-VLM work and the Person 2 YOLO work is documented in [`docs/person1_ai_vlm_yolo_integration.tex`](docs/person1_ai_vlm_yolo_integration.tex). The LaTeX file is an integration guide; model-dependent VLM commands must not be treated as runnable in the simulation image until the dedicated AI dependencies are installed.
 
 ---
 
