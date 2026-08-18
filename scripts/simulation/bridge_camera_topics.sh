@@ -5,12 +5,8 @@ CONTAINER="${UAS_SIM_CONTAINER:-uas_sim}"
 
 inner='
 set -euo pipefail
-source /opt/ros/humble/setup.bash
-echo "[bridge_camera_topics] Starting native C++ Gazebo -> ROS 2 camera bridge..."
-exec ros2 run ros_gz_bridge parameter_bridge \
-  /camera@sensor_msgs/msg/Image@gz.msgs.Image \
-  /depth_camera@sensor_msgs/msg/Image@gz.msgs.Image \
-  /camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo
+echo "[bridge_camera_topics] Starting the native vehicle camera bridge..."
+exec bash /home/uas/scripts/simulation/camera_bridge_native.sh
 '
 
 if docker inspect -f '{{.State.Running}}' "$CONTAINER" >/dev/null 2>&1; then

@@ -1,210 +1,256 @@
 #!/usr/bin/env python3
-"""Bridge Gazebo Harmonic camera messages to ROS 2."""
+"""
+gz_camera_ros_bridge.py — Reliable Gz→ROS 2 camera bridge.
+
+Reads raw pixel data from `gz topic -e -t /camera` text output, constructs
+ROS sensor_msgs/Image messages, and publishes on /camera/color/image_raw with
+RELIABLE QoS — matching what ros_gz_bridge uses — so that fly_pattern.py
+subscriptions receive frames.
+
+This bypasses ros_gz_bridge entirely, avoiding the Harmonic/Fortress protobuf
+type mismatch ("Unknown message type [8]") that prevents frames from flowing.
+"""
 from __future__ import annotations
 
-import argparse
+import os
+import re
 import subprocess
 import sys
+import threading
 import time
-from typing import Any
+from typing import Optional
 
-import gz.transport13 as gz_transport
-from gz.msgs10 import camera_info_pb2, image_pb2
 import rclpy
-from builtin_interfaces.msg import Time as RosTime
 from rclpy.node import Node
-from sensor_msgs.msg import CameraInfo, Image
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from sensor_msgs.msg import Image
+from std_msgs.msg import Header
+import builtin_interfaces.msg
 
 
-IMAGE_ENCODINGS = {
-    1: "mono8",
-    2: "mono16",
-    3: "rgb8",
-    4: "rgba8",
-    5: "bgra8",
-    8: "bgr8",
-    11: "32FC1",
-    13: "32FC1",
-    14: "32FC3",
-    35: "rgb8",
-    42: "rgb8",
-}
+CAMERA_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    durability=DurabilityPolicy.VOLATILE,
+)
 
-def get_encoding(pixel_format: int, step: int, width: int) -> str:
-    if pixel_format in IMAGE_ENCODINGS:
-        return IMAGE_ENCODINGS[pixel_format]
-    bpp = step // max(1, width)
-    if bpp == 4:
-        return "32FC1"
-    if bpp == 1:
-        return "mono8"
-    return "rgb8"
-
-def list_gazebo_topics() -> list[str]:
-    result = subprocess.run(
-        ["gz", "topic", "-l"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return sorted(line.strip() for line in result.stdout.splitlines() if line.strip())
+GZ_TOPIC = os.environ.get('GZ_CAMERA_TOPIC', '/camera')
+ROS_TOPIC = os.environ.get('ROS_CAMERA_TOPIC', '/camera/color/image_raw')
 
 
-def ros_stamp(node: Node, stamp: Any) -> RosTime:
-    if stamp.sec or stamp.nsec:
-        return RosTime(sec=int(stamp.sec), nanosec=int(stamp.nsec))
-    return node.get_clock().now().to_msg()
+class GzCameraBridgeNode(Node):
+    def __init__(self) -> None:
+        super().__init__('gz_camera_bridge')
+        self._pub = self.create_publisher(Image, ROS_TOPIC, CAMERA_QOS)
+        self._frame_count = 0
+        self._last_log = 0.0
+        self.get_logger().info(
+            f'[gz_camera_bridge] Bridging {GZ_TOPIC} -> {ROS_TOPIC} '
+            f'with RELIABLE QoS (text-parse mode).'
+        )
+
+    def publish_raw(self, width: int, height: int, step: int,
+                    pixel_format: str, data_bytes: bytes,
+                    stamp_sec: int = 0, stamp_nsec: int = 0) -> None:
+        msg = Image()
+        msg.header = Header()
+        stamp = builtin_interfaces.msg.Time()
+        stamp.sec = stamp_sec
+        stamp.nanosec = stamp_nsec
+        msg.header.stamp = stamp
+        msg.header.frame_id = 'camera_color_optical_frame'
+        msg.height = height
+        msg.width = width
+        msg.encoding = pixel_format  # 'rgb8' for RGB_INT8
+        msg.is_bigendian = 0
+        msg.step = step
+        msg.data = list(data_bytes)
+        self._pub.publish(msg)
+        self._frame_count += 1
+        now = time.time()
+        if now - self._last_log > 5.0:
+            self.get_logger().info(
+                f'[gz_camera_bridge] Publishing {width}x{height} {pixel_format} '
+                f'frames. Total={self._frame_count}'
+            )
+            self._last_log = now
 
 
-def frame_id(header: Any, default: str) -> str:
-    for entry in header.data:
-        if entry.key in ("frame_id", "frame") and entry.value:
-            return entry.value[0]
-    return default
+def parse_gz_image_stream(node: GzCameraBridgeNode, proc: subprocess.Popen) -> None:
+    """
+    Parse the text-format protobuf output of `gz topic -e -t /camera`.
+    Each message block ends with a blank line. Fields we care about:
+      width, height, step, pixel_format_type, data (raw escaped string).
+    """
+    width = height = step = 0
+    pixel_format = 'rgb8'
+    stamp_sec = stamp_nsec = 0
+    in_data = False
+    data_chunks: list[str] = []
+    # Regex to extract the raw escaped string content from data field
+    data_line_re = re.compile(r'^data:\s*"(.*)"$')
+    data_cont_re = re.compile(r'^"(.*)"$')  # continuation line
 
+    def decode_gz_escape(s: str) -> bytes:
+        """Decode Gz's escaped string to bytes (handles \\nnn octal and \\xHH hex)."""
+        result = bytearray()
+        i = 0
+        while i < len(s):
+            if s[i] == '\\' and i + 1 < len(s):
+                nc = s[i + 1]
+                if nc == 'n':
+                    result.append(ord('\n'))
+                    i += 2
+                elif nc == 'r':
+                    result.append(ord('\r'))
+                    i += 2
+                elif nc == 't':
+                    result.append(ord('\t'))
+                    i += 2
+                elif nc == '\\':
+                    result.append(ord('\\'))
+                    i += 2
+                elif nc == '"':
+                    result.append(ord('"'))
+                    i += 2
+                elif nc.isdigit():
+                    # octal \NNN
+                    end = i + 2
+                    while end < i + 5 and end < len(s) and s[end].isdigit():
+                        end += 1
+                    result.append(int(s[i+1:end], 8) & 0xFF)
+                    i = end
+                elif nc == 'x':
+                    # hex \xNN
+                    hex_str = s[i+2:i+4]
+                    result.append(int(hex_str, 16) & 0xFF)
+                    i += 4
+                else:
+                    result.append(ord(s[i]))
+                    i += 1
+            else:
+                result.append(ord(s[i]))
+                i += 1
+        return bytes(result)
 
-class CameraBridge(Node):
-    def __init__(
-        self,
-        topics: list[str],
-        default_frame: str,
-        rgb_topic: str,
-        depth_topic: str,
-        camera_info_topic: str,
-    ) -> None:
-        super().__init__("gz_camera_bridge")
-        self._default_frame = default_frame
-        self._rgb_topic = rgb_topic
-        self._depth_topic = depth_topic
-        self._camera_info_topic = camera_info_topic
-        self._gz_node = gz_transport.Node()
-        self._gz_subscriptions: list[Any] = []
-        self._subscribed_topics: set[str] = set()
-
-        for topic in topics:
-            self._add_topic_bridge(topic)
-
-        # Periodic check for newly published Gazebo camera topics
-        self.create_timer(3.0, self._discover_new_topics)
-
-    def _discover_new_topics(self) -> None:
-        all_topics = list_gazebo_topics()
-        for topic in all_topics:
-            if topic not in self._subscribed_topics:
-                if topic.lower().endswith("/camera_info") or "image" in topic.lower() or topic in ("/camera", "/depth_camera"):
-                    self._add_topic_bridge(topic)
-
-    def _add_topic_bridge(self, topic: str) -> None:
-        if topic in self._subscribed_topics:
-            return
-        self._subscribed_topics.add(topic)
-
-        if topic.lower().endswith("/camera_info") or topic == "/camera_info":
-            self._subscribe_camera_info(topic, self._camera_info_topic, "/camera_info")
-        elif "image" in topic.lower() or topic in ("/camera", "/depth_camera"):
-            is_depth = "depth" in topic.lower() or "disparity" in topic.lower()
-            canonical = self._depth_topic if is_depth else self._rgb_topic
-            alias = "/depth_camera" if is_depth else "/camera"
-            self._subscribe_image(topic, canonical, alias)
-
-    def _subscribe_image(self, topic: str, output_topic: str, alias_topic: str) -> None:
-        pub_canonical = self.create_publisher(Image, output_topic, 10)
-        pub_alias = self.create_publisher(Image, alias_topic, 10) if alias_topic != output_topic else None
-
-        def callback(message: image_pb2.Image) -> None:
-            try:
-                encoding = get_encoding(message.pixel_format_type, message.step, message.width)
-
-                output = Image()
-                output.header.stamp = ros_stamp(self, message.header.stamp)
-                output.header.frame_id = frame_id(message.header, self._default_frame)
-                output.height = message.height
-                output.width = message.width
-                output.encoding = encoding
-                output.is_bigendian = False
-                output.step = message.step
-                output.data = bytes(message.data)
-
-                pub_canonical.publish(output)
-                if pub_alias is not None:
-                    pub_alias.publish(output)
-            except Exception as e:
-                self.get_logger().error(f"Image callback error on {topic}: {e}")
-
+    for raw_line in proc.stdout:
         try:
-            sub = self._gz_node.subscribe(image_pb2.Image, topic, callback)
-            self._gz_subscriptions.append(sub)
-            self.get_logger().info(f"Bridged Gazebo image [{topic}] -> ROS 2 [{output_topic}] & [{alias_topic}]")
-        except Exception as e:
-            self.get_logger().error(f"Failed to subscribe to Gazebo topic {topic}: {e}")
+            line = raw_line.decode('latin-1').rstrip('\r\n')
+        except Exception:
+            continue
 
-    def _subscribe_camera_info(self, topic: str, output_topic: str, alias_topic: str) -> None:
-        pub_canonical = self.create_publisher(CameraInfo, output_topic, 10)
-        pub_alias = self.create_publisher(CameraInfo, alias_topic, 10) if alias_topic != output_topic else None
+        if not line.strip():
+            # End of message block — publish if we have data
+            if width > 0 and height > 0 and data_chunks:
+                raw_str = ''.join(data_chunks)
+                raw_bytes = decode_gz_escape(raw_str)
+                expected = height * step
+                if len(raw_bytes) >= expected and expected > 0:
+                    node.publish_raw(
+                        width, height, step, pixel_format,
+                        raw_bytes[:expected], stamp_sec, stamp_nsec
+                    )
+            # Reset
+            width = height = step = 0
+            pixel_format = 'rgb8'
+            stamp_sec = stamp_nsec = 0
+            in_data = False
+            data_chunks = []
+            continue
 
-        def callback(message: camera_info_pb2.CameraInfo) -> None:
+        if in_data:
+            # continuation of data field (long base64/escaped string)
+            m = data_cont_re.match(line.strip())
+            if m:
+                data_chunks.append(m.group(1))
+            else:
+                in_data = False
+        elif line.strip().startswith('sec:'):
             try:
-                output = CameraInfo()
-                output.header.stamp = ros_stamp(self, message.header.stamp)
-                output.header.frame_id = frame_id(message.header, self._default_frame)
-                output.width = message.width
-                output.height = message.height
-                output.distortion_model = {
-                    0: "plumb_bob",
-                    1: "rational_polynomial",
-                    2: "equidistant",
-                }.get(message.distortion.model, "plumb_bob")
-                output.d = list(message.distortion.k)
-                output.k = list(message.intrinsics.k)
-                output.p = list(message.projection.p)
-                rectification = list(message.rectification_matrix)
-                output.r = rectification if len(rectification) == 9 else [
-                    1.0, 0.0, 0.0,
-                    0.0, 1.0, 0.0,
-                    0.0, 0.0, 1.0,
-                ]
-                pub_canonical.publish(output)
-                if pub_alias is not None:
-                    pub_alias.publish(output)
-            except Exception as e:
-                self.get_logger().error(f"CameraInfo callback error on {topic}: {e}")
+                stamp_sec = int(line.strip().split(':')[1].strip())
+            except Exception:
+                pass
+        elif line.strip().startswith('nsec:'):
+            try:
+                stamp_nsec = int(line.strip().split(':')[1].strip())
+            except Exception:
+                pass
+        elif line.strip().startswith('width:'):
+            try:
+                width = int(line.strip().split(':')[1].strip())
+            except Exception:
+                pass
+        elif line.strip().startswith('height:'):
+            try:
+                height = int(line.strip().split(':')[1].strip())
+            except Exception:
+                pass
+        elif line.strip().startswith('step:'):
+            try:
+                step = int(line.strip().split(':')[1].strip())
+            except Exception:
+                pass
+        elif line.strip().startswith('pixel_format_type:'):
+            pft = line.strip().split(':', 1)[1].strip()
+            if pft in ('RGB_INT8', '1'):
+                pixel_format = 'rgb8'
+            elif pft in ('RGBA_INT8', '2'):
+                pixel_format = 'rgba8'
+            elif pft in ('BGR_INT8', '3'):
+                pixel_format = 'bgr8'
+            elif pft in ('L_INT8', '5'):
+                pixel_format = 'mono8'
+        elif line.strip().startswith('data:'):
+            m = data_line_re.match(line.strip())
+            if m:
+                data_chunks.append(m.group(1))
+                in_data = True  # may continue on next lines
 
+
+def bridge_loop(node: GzCameraBridgeNode) -> None:
+    """Spawn gz topic -e subprocess in a loop, parse and republish."""
+    while rclpy.ok():
+        node.get_logger().info(f'[gz_camera_bridge] Connecting to gz topic {GZ_TOPIC}...')
+        proc = None
         try:
-            sub = self._gz_node.subscribe(camera_info_pb2.CameraInfo, topic, callback)
-            self._gz_subscriptions.append(sub)
-            self.get_logger().info(f"Bridged Gazebo camera info [{topic}] -> ROS 2 [{output_topic}] & [{alias_topic}]")
+            proc = subprocess.Popen(
+                ['gz', 'topic', '-e', '-t', GZ_TOPIC],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            node.get_logger().info('[gz_camera_bridge] Connected. Streaming frames...')
+            parse_gz_image_stream(node, proc)
         except Exception as e:
-            self.get_logger().error(f"Failed to subscribe to Gazebo camera info {topic}: {e}")
+            node.get_logger().error(f'[gz_camera_bridge] Error: {e}')
+        finally:
+            if proc is not None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        if rclpy.ok():
+            node.get_logger().warn('[gz_camera_bridge] Stream ended. Reconnecting in 2s...')
+            time.sleep(2.0)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--wait-sec", type=float, default=120.0)
-    parser.add_argument("--frame-id", default="camera_link")
-    parser.add_argument("--rgb-topic", default="/camera/color/image_raw")
-    parser.add_argument("--depth-topic", default="/camera/depth/image_raw")
-    parser.add_argument("--camera-info-topic", default="/camera/color/camera_info")
-    args = parser.parse_args()
-
-    default_targets = ["/camera", "/depth_camera", "/camera_info"]
     rclpy.init()
-    print("[gz_camera_ros_bridge] Initialized Gazebo -> ROS 2 Camera Bridge", flush=True)
-    node = CameraBridge(
-        default_targets,
-        args.frame_id,
-        args.rgb_topic,
-        args.depth_topic,
-        args.camera_info_topic,
-    )
+    node = GzCameraBridgeNode()
+
+    # Bridge runs in background thread; ROS spins in main thread
+    t = threading.Thread(target=bridge_loop, args=(node,), daemon=True)
+    t.start()
+
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+    except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        rclpy.shutdown()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
