@@ -18,7 +18,7 @@ docker compose --project-directory . -f docker/docker-compose.yml --profile sim 
 docker exec -it uas_sim bash -lc '/home/uas/docker/bootstrap_px4.sh'
 ```
 
-The bootstrap clones PX4 `v1.15.2`, initializes its submodules, copies root-level `.sdf` worlds from `gazebo_simulation/worlds`, and builds `gz_x500`.
+The bootstrap clones PX4 `v1.15.2`, initializes its submodules, installs the repository worlds and the camera-equipped `x500_depth` model, and builds the PX4 SITL binary.
 
 For a GUI session, allow local X11 access before starting the container:
 
@@ -34,21 +34,23 @@ Start the migrated PX4, MAVROS, camera bridge, and fixed OFFBOARD flight pattern
 ./docker/launch_obstacle_stack.sh
 ```
 
-The default model is `gz_x500_mono_cam`. Use the depth-equipped model for inspection:
+The default model is `gz_x500_mono_cam`, which is the validated moving RGB camera path:
 
 ```bash
-PX4_GZ_WORLD=earthen_heritage_wall \
-PX4_GZ_MODEL_TARGET=gz_x500_depth \
-./docker/launch_obstacle_stack.sh
+./docker/launch_obstacle_stack.sh --gui
 ```
 
-The launcher creates tmux windows for PX4/Gazebo, MAVROS, camera bridging, and flight. Use `--no-attach` to leave the session detached or `--no-fly` to record without running the fixed flight script.
+The depth-equipped `gz_x500_depth` model remains available explicitly and uses Gazebo's synchronized `rgbd_camera` sensor. RGB is validated in the flight path; the analyzer warns if the depth stream is decoded but remains static. The launcher creates tmux windows for PX4/Gazebo, MAVROS, camera bridging, and flight. Use `--no-attach` to leave the session detached or `--no-fly` to record without running the fixed flight script.
+
+The launcher uses PX4 parameters installed during bootstrap and skips the unstable runtime MAVROS parameter round-trip by default. Set `FLY_PATTERN_SKIP_PARAM=0` only when explicitly testing runtime parameter updates.
 
 ## ROS Package
 
-The source is mounted into `/home/uas/ros2_ws/src` inside the simulation container:
+The source is mounted into `/home/uas/ros2_ws/src` inside the simulation container. The flight launcher now refuses to start if live RGB frames are not arriving:
 
 ```bash
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash && ros2 topic hz /camera/color/image_raw'
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash && ros2 topic hz /camera/depth/image_raw'
 ```
 
 Launch the inspection nodes after the workspace is built:
@@ -81,5 +83,7 @@ Place datasets in `data/`, trained weights in `models/yolo/`, and cached CLIP em
 python3 scripts/analyze_rosbags.py --bag list
 python3 scripts/analyze_rosbags.py --bag latest --export-csv --export-video
 ```
+
+The analyzer reports the number of decoded video frames and whether the frames changed relative to the first frame. The canonical RGB recording is `/camera/color/image_raw`; inspect the corresponding `camera_color_image_raw.mp4` file rather than an unrelated Gazebo GUI topic.
 
 The original Docker/Gazebo troubleshooting notes are retained in `docs/legacy/`.
