@@ -136,7 +136,7 @@ python scripts/generate_table4_figure6.py --input-dir results/sweeps --output-di
 
 ## Important Status
 
-The migrated PX4/MAVROS flight path is the validated baseline. Camera delivery, defect inference, dataset preparation, and six-condition metrics still require real model/data assets and runtime validation. Existing result files are generated examples, not measured experiments.
+The migrated PX4/MAVROS flight path and canonical RGB camera export are validated in the mono-camera facade flight. Depth delivery is validated with `gz_x500_depth`; defect inference, dataset preparation, and six-condition metrics still require real model/data assets and research validation. Existing result files are generated examples, not measured experiments.
 
 ## License
 

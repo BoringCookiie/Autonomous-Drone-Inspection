@@ -37,4 +37,12 @@ fi
 echo "[fly] Launching flight pattern controller..."
 python3 /home/uas/scripts/simulation/fly_pattern.py
 echo "[fly] Flight pattern complete. Exporting telemetry CSV and camera MP4 video..."
-python3 /home/uas/scripts/analysis/analyze_rosbags.py --bag latest --export-csv --export-video
+BAG_SELECTOR=latest
+if [[ -s /home/uas/rosbags/.active_bag ]]; then
+  read -r BAG_SELECTOR < /home/uas/rosbags/.active_bag
+fi
+python3 /home/uas/scripts/analysis/analyze_rosbags.py \
+  --bag "$BAG_SELECTOR" \
+  --export-csv \
+  --export-video \
+  --video-topic /camera/color/image_raw

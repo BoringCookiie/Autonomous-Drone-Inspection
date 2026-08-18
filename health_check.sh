@@ -69,15 +69,15 @@ if [ $CONTAINER_RUNNING -eq 1 ]; then
             echo -e "   ${YELLOW}⚠${NC}  /uas1/state NOT available"
         fi
         
-        if docker exec $CONTAINER bash -c "source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null" | grep -q "/camera"; then
-            echo -e "   ${GREEN}✓${NC} /camera topic available"
+        if docker exec $CONTAINER bash -c "source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null" | grep -qx "/camera/color/image_raw"; then
+            echo -e "   ${GREEN}✓${NC} canonical RGB topic available"
             if docker exec $CONTAINER bash -c "source /opt/ros/humble/setup.bash && timeout 6 ros2 topic hz /camera/color/image_raw 2>&1" | grep -q "average rate"; then
                 echo -e "   ${GREEN}✓${NC} RGB frames are flowing"
             else
                 echo -e "   ${RED}✗${NC} RGB topic exists but no frames are flowing"
             fi
         else
-            echo -e "   ${YELLOW}⚠${NC}  /camera topic NOT available"
+            echo -e "   ${YELLOW}⚠${NC}  canonical RGB topic NOT available"
         fi
     else
         echo -e "   ${RED}✗${NC} No ROS2 topics detected"

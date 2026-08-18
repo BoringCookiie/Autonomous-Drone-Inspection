@@ -21,6 +21,7 @@ import math
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import time
 from typing import Any, Optional
@@ -104,13 +105,11 @@ _DEFAULT_SENSOR_TOPICS = [
     '/diagnostics',
     '/tf',
     '/tf_static',
-    # Camera topics (bridged from Gazebo)
-    '/camera',
-    '/depth_camera',
-    '/camera_info',
+    # Canonical camera topics (bridged from Gazebo).  Do not record the raw
+    # Gazebo aliases as well: they are model-dependent and often have zero
+    # samples, which makes post-flight topic selection ambiguous.
     '/camera/color/image_raw',
     '/camera/color/camera_info',
-    '/camera/depth/image_raw',
 ]
 
 
@@ -119,6 +118,9 @@ class RosbagRecorder:
         self._node = node
         self._base = base.rstrip('/')
         self._process: subprocess.Popen[str] | None = None
+        self._log_file = None
+        self._log_path: Path | None = None
+        self._bag_marker: Path | None = None
         self.output_dir: Path | None = None
 
     @staticmethod
@@ -129,7 +131,12 @@ class RosbagRecorder:
         explicit = os.environ.get('FLY_PATTERN_BAG_TOPICS', '').strip()
         if explicit:
             return [topic.strip() for topic in explicit.split(',') if topic.strip()]
-        return [topic.format(base=self._base) for topic in _DEFAULT_SENSOR_TOPICS]
+        topics = [topic.format(base=self._base) for topic in _DEFAULT_SENSOR_TOPICS]
+        record_depth = os.environ.get('FLY_PATTERN_RECORD_DEPTH', '').lower() in ('1', 'true', 'yes')
+        require_depth = os.environ.get('FLY_PATTERN_REQUIRE_DEPTH', '').lower() in ('1', 'true', 'yes')
+        if record_depth or require_depth:
+            topics.append('/camera/depth/image_raw')
+        return topics
 
     def start(self) -> None:
         if not self._enabled():
@@ -138,29 +145,57 @@ class RosbagRecorder:
 
         root = Path(os.environ.get('FLY_PATTERN_BAG_DIR', '/home/uas/rosbags')).expanduser()
         root.mkdir(parents=True, exist_ok=True)
+        self._bag_marker = root / '.active_bag'
+        self._bag_marker.unlink(missing_ok=True)
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.output_dir = root / f'fly_pattern_{stamp}'
 
         topics = self._topics()
-        cmd = ['ros2', 'bag', 'record', '-o', str(self.output_dir), *topics]
+        ros2_executable = shutil.which('ros2') or '/opt/ros/humble/bin/ros2'
+        cmd = [ros2_executable, 'bag', 'record', '-o', str(self.output_dir), *topics]
         self._node.get_logger().info(
             f'Recording {len(topics)} explicit camera & telemetry topics to {self.output_dir}'
         )
 
         try:
+            # rosbag2 owns the output directory and may remove files already
+            # present there while opening storage. Keep the diagnostic log next
+            # to the bag, not inside it.
+            self._log_path = Path(f'{self.output_dir}.record.log')
+            self._log_file = self._log_path.open(
+                'w', encoding='utf-8'
+            )
             env = dict(os.environ)
             env['FASTRTPS_DEFAULT_PROFILES_FILE'] = '/home/uas/fastdds_udp.xml'
             self._process = subprocess.Popen(
                 cmd,
                 env=env,
-                stdout=subprocess.DEVNULL,
+                stdout=self._log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
                 start_new_session=True,
             )
-        except FileNotFoundError:
-            self._node.get_logger().warn('ros2 command not found; skipping sensor rosbag recording')
+            time.sleep(1.0)
+            if self._process.poll() is not None:
+                self._log_file.flush()
+                details = self._log_path.read_text(encoding='utf-8', errors='replace')
+                raise RuntimeError(
+                    f'rosbag recorder exited with code {self._process.returncode}: {details[-2000:]}'
+                )
+        except FileNotFoundError as exc:
+            self._node.get_logger().error(f'Unable to execute rosbag recorder {cmd[0]}: {exc}')
+            if self._log_file is not None:
+                self._log_file.close()
+                self._log_file = None
             self._process = None
+            raise RuntimeError('rosbag recording could not be started') from exc
+        except Exception as exc:
+            self._node.get_logger().error(f'Unable to start rosbag recorder: {exc}')
+            if self._log_file is not None:
+                self._log_file.close()
+                self._log_file = None
+            self._process = None
+            raise
 
     def stop(self) -> None:
         if self._process is None:
@@ -178,6 +213,11 @@ class RosbagRecorder:
 
         if self.output_dir is not None:
             self._node.get_logger().info(f'Sensor rosbag saved: {self.output_dir}')
+            if self._bag_marker is not None:
+                self._bag_marker.write_text(str(self.output_dir), encoding='utf-8')
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
         self._process = None
 
 
@@ -280,6 +320,8 @@ class SimpleFlyer(Node):
         self.has_local_pos = False
         self.has_rgb_frame = False
         self.has_depth_frame = False
+        self.rgb_frame_count = 0
+        self.depth_frame_count = 0
 
         # Continuous background setpoint streamer (20 Hz)
         self.target_pose = PoseStamped()
@@ -301,11 +343,13 @@ class SimpleFlyer(Node):
         self.has_local_pos = True
 
     def _rgb_cb(self, msg: Image) -> None:
+        self.rgb_frame_count += 1
         if not self.has_rgb_frame:
             self.get_logger().info(f'RGB frame received: {msg.width}x{msg.height} {msg.encoding}')
         self.has_rgb_frame = True
 
     def _depth_cb(self, msg: Image) -> None:
+        self.depth_frame_count += 1
         if not self.has_depth_frame:
             self.get_logger().info(f'Depth frame received: {msg.width}x{msg.height} {msg.encoding}')
         self.has_depth_frame = True
@@ -442,7 +486,7 @@ class SimpleFlyer(Node):
         t_end = time.time() + timeout_sec
         while time.time() < t_end:
             rclpy.spin_once(self, timeout_sec=0.1)
-            if self.has_rgb_frame and (not require_depth or self.has_depth_frame):
+            if self.rgb_frame_count >= 2 and (not require_depth or self.depth_frame_count >= 2):
                 self.get_logger().info('Required camera streams are publishing live frames.')
                 return True
         self.get_logger().error(

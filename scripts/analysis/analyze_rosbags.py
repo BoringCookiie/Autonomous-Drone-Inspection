@@ -128,6 +128,10 @@ class VideoSink:
         height, width = frame.shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         self.writer = cv2.VideoWriter(str(self.path), fourcc, self.target_fps, (width, height), True)
+        if not self.writer.isOpened():
+            self.writer.release()
+            self.writer = None
+            raise RuntimeError(f'Unable to open MP4 writer for {self.path}')
 
     def write(self, frame: np.ndarray, time_s: float | None = None) -> None:
         if frame.ndim == 2:
@@ -168,11 +172,19 @@ class VideoSink:
 
 
 class BagAnalyzer:
-    def __init__(self, bag: BagInfo, export_dir: Path | None, export_csv: bool, export_video: bool) -> None:
+    def __init__(
+        self,
+        bag: BagInfo,
+        export_dir: Path | None,
+        export_csv: bool,
+        export_video: bool,
+        video_topic: str,
+    ) -> None:
         self.bag = bag
         self.export_dir = export_dir
         self.export_csv = export_csv
         self.export_video = export_video
+        self.video_topic = video_topic
         self.local_position = PositionStats()
         self.setpoints = PositionStats()
         self.velocity_local = NumericStats()
@@ -305,12 +317,20 @@ class BagAnalyzer:
             text = getattr(msg, 'text', '')
             if text:
                 self.status_text.append(text)
-        elif self.export_video and self.bag.topic_types.get(topic) == 'sensor_msgs/msg/Image':
+        elif (
+            self.export_video
+            and topic == self.video_topic
+            and self.bag.topic_types.get(topic) == 'sensor_msgs/msg/Image'
+        ):
             frame = image_msg_to_bgr(msg)
             sink = self._video(topic)
             if frame is not None and sink is not None:
                 sink.write(frame, time_s=time_s)
-        elif self.export_video and self.bag.topic_types.get(topic) == 'sensor_msgs/msg/CompressedImage':
+        elif (
+            self.export_video
+            and topic == self.video_topic
+            and self.bag.topic_types.get(topic) == 'sensor_msgs/msg/CompressedImage'
+        ):
             frame = compressed_image_to_bgr(msg)
             sink = self._video(topic)
             if frame is not None and sink is not None:
@@ -387,7 +407,28 @@ class BagAnalyzer:
                                 'matches the first frame; inspect Gazebo sensor pose/rendering.'
                             )
                 else:
-                    print('  No videos written because no image topics were present.')
+                    print(f'  No video written for the selected topic: {self.video_topic}')
+                    if image_topics:
+                        print('  Available image topics with samples:')
+                        for topic, count, msg_type in image_topics:
+                            if count > 0:
+                                print(f'    {count:6d}  {topic}  [{msg_type}]')
+
+    def validate_video(self) -> None:
+        """Reject an export that cannot prove the camera stream was useful."""
+        if not self.export_video:
+            return
+        sink = self.video_sinks.get(self.video_topic)
+        if sink is None or sink.frames < 2:
+            raise SystemExit(
+                f'Camera validation failed: no decodable frames on {self.video_topic}'
+            )
+        if self.local_position.count > 10 and self.local_position.distance_3d > 1.0:
+            if sink.changed_frames == 0:
+                raise SystemExit(
+                    f'Camera validation failed: {self.video_topic} stayed identical '
+                    'while the vehicle moved.'
+                )
 
 
 def norm3(x: float, y: float, z: float) -> float:
@@ -519,6 +560,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--bag', default='latest', help='latest, list, bag directory name, or bag path.')
     parser.add_argument('--export-csv', action='store_true', help='Export decoded sensor CSV files.')
     parser.add_argument('--export-video', action='store_true', help='Export sensor_msgs/Image topics to MP4 videos.')
+    parser.add_argument(
+        '--video-topic',
+        default='/camera/color/image_raw',
+        help='Image topic to export (default: canonical moving RGB topic).',
+    )
     parser.add_argument('--export-dir', type=Path, default=None, help='Output directory for CSV/video exports.')
     return parser.parse_args()
 
@@ -543,9 +589,16 @@ def main() -> None:
         export_dir = args.export_dir
         if export_dir is None and (args.export_csv or args.export_video):
             export_dir = bag.path / 'analysis'
-        analyzer = BagAnalyzer(bag, export_dir, args.export_csv, args.export_video)
+        analyzer = BagAnalyzer(
+            bag,
+            export_dir,
+            args.export_csv,
+            args.export_video,
+            args.video_topic,
+        )
         analyzer.analyze()
         analyzer.print_report()
+        analyzer.validate_video()
 
 
 if __name__ == '__main__':
