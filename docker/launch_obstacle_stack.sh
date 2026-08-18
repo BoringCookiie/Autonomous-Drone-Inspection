@@ -8,9 +8,16 @@ set -euo pipefail
 
 CONTAINER="${UAS_SIM_CONTAINER:-uas_sim}"
 SESSION="${UAS_OBSTACLE_TMUX_SESSION:-uas_obstacle}"
-PX4_GZ_MODEL_TARGET="${PX4_GZ_MODEL_TARGET:-gz_x500_depth}"
+PX4_GZ_MODEL_TARGET="${PX4_GZ_MODEL_TARGET:-gz_x500_mono_cam}"
 PX4_GZ_WORLD="${PX4_GZ_WORLD:-earthen_heritage_wall}"
 HEADLESS="${HEADLESS:-1}"
+if [[ -n "${FLY_PATTERN_REQUIRE_DEPTH:-}" ]]; then
+  REQUIRE_DEPTH="$FLY_PATTERN_REQUIRE_DEPTH"
+elif [[ "$PX4_GZ_MODEL_TARGET" == *depth* ]]; then
+  REQUIRE_DEPTH=1
+else
+  REQUIRE_DEPTH=0
+fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ATTACH=1
 NO_FLY=0
@@ -42,53 +49,20 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   exit 1
 fi
 
-# MAVROS: fixed ROS namespace /uas1 so services are always /uas1/... (matches fly_pattern default).
-# Short delay so PX4's onboard MAVLink port is listening before connect.
-mavros_inner="export FASTRTPS_DEFAULT_PROFILES_FILE=/home/uas/fastdds_udp.xml && source /opt/ros/humble/setup.bash && sleep 5 && until ros2 run mavros mavros_node --ros-args -r __ns:=/uas1 -p fcu_url:=udp://:14540@127.0.0.1:14580; do echo '[mavros] MAVROS exited, restarting in 2s...'; sleep 2; done"
-
-# Camera bridge: Gazebo Harmonic -> ROS 2 image and depth bridge.
-camera_bridge_inner="export FASTRTPS_DEFAULT_PROFILES_FILE=/home/uas/fastdds_udp.xml && source /opt/ros/humble/setup.bash && until python3 /home/uas/scripts/simulation/gz_camera_ros_bridge.py; do echo '[camera_bridge] Bridge exited, restarting in 2s...'; sleep 2; done"
-
-# Wait only for /uas1 (do not treat a stray /mavros as "ready"), then camera topic, then FCU link.
-fly_inner="export FASTRTPS_DEFAULT_PROFILES_FILE=/home/uas/fastdds_udp.xml && source /opt/ros/humble/setup.bash && export MAVROS_NS=\"\${MAVROS_NS:-/uas1}\" && bash -c '
-set -e
-for i in \$(seq 1 180); do
-  if ros2 service list 2>/dev/null | grep -qF \"/uas1/cmd/arming\"; then
-    echo \"[fly] /uas1/cmd/arming is up\"
-    break
-  fi
-  sleep 1
-done
-for i in \$(seq 1 60); do
-  if ros2 topic list 2>/dev/null | grep -qE \"/camera|/depth_camera\"; then
-    echo \"[fly] Camera topics are up\"
-    break
-  fi
-  sleep 1
-done
-echo \"[fly] Waiting for FCU link (heartbeat)...\"
-sleep 10
-export MAVROS_NS=\"\${MAVROS_NS:-/uas1}\"
-python3 /home/uas/scripts/simulation/fly_pattern.py
-echo \"[fly] Flight pattern complete. Exporting telemetry CSV and camera MP4 video...\"
-python3 /home/uas/scripts/analysis/analyze_rosbags.py --bag latest --export-csv --export-video
-'"
-
 # Window 0: SITL + Gazebo (must be first)
-tmux new-session -d -s "$SESSION" -n px4_gz "cd $(printf %q "$ROOT") && PX4_GZ_MODEL_TARGET=$(printf %q "$PX4_GZ_MODEL_TARGET") PX4_GZ_WORLD=$(printf %q "$PX4_GZ_WORLD") HEADLESS=$HEADLESS ./scripts/simulation/run_obstacle_flight.sh"
+tmux new-session -d -s "$SESSION" -n px4_gz "cd \"$ROOT\" && PX4_GZ_MODEL_TARGET=\"$PX4_GZ_MODEL_TARGET\" PX4_GZ_WORLD=\"$PX4_GZ_WORLD\" HEADLESS=$HEADLESS ./scripts/simulation/run_obstacle_flight.sh"
 
 # Window 1: MAVROS
-tmux new-window -t "$SESSION" -n mavros "docker exec -i \"$CONTAINER\" bash -c $(printf %q "$mavros_inner")"
+tmux new-window -t "$SESSION" -n mavros "docker exec -i \"$CONTAINER\" bash /home/uas/scripts/simulation/run_mavros.sh"
 
 # Window 2: Gazebo camera/depth topics -> ROS 2 bridge
-tmux new-window -t "$SESSION" -n camera_bridge "docker exec -i \"$CONTAINER\" bash -c $(printf %q "$camera_bridge_inner")"
+tmux new-window -t "$SESSION" -n camera_bridge "docker exec -i \"$CONTAINER\" bash /home/uas/scripts/simulation/camera_bridge_native.sh"
 
 # Window 3: flight script (after waits)
 if [[ "$NO_FLY" -eq 1 ]]; then
-  bag_inner="source /opt/ros/humble/setup.bash && mkdir -p /home/uas/rosbags && cd /home/uas/rosbags && ros2 bag record -a"
-  tmux new-window -t "$SESSION" -n recorder "docker exec -i \"$CONTAINER\" bash -c $(printf %q "$bag_inner")"
+  tmux new-window -t "$SESSION" -n recorder "docker exec -i \"$CONTAINER\" bash -c 'source /opt/ros/humble/setup.bash && mkdir -p /home/uas/rosbags && cd /home/uas/rosbags && ros2 bag record -a'"
 else
-  tmux new-window -t "$SESSION" -n fly "docker exec -i \"$CONTAINER\" bash -c $(printf %q "$fly_inner")"
+  tmux new-window -t "$SESSION" -n fly "docker exec -i \"$CONTAINER\" env FLY_PATTERN_REQUIRE_DEPTH=\"$REQUIRE_DEPTH\" bash /home/uas/scripts/simulation/run_fly_pattern.sh"
 fi
 
 tmux select-window -t "$SESSION:0"
