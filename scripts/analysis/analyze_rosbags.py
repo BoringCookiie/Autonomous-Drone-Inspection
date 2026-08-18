@@ -109,32 +109,62 @@ class CsvSink:
 
 
 class VideoSink:
-    def __init__(self, out_dir: Path, topic: str, fps: float = 20.0) -> None:
+    def __init__(self, out_dir: Path, topic: str, fps: float = 30.0) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         safe = topic.strip('/').replace('/', '_') or 'camera'
         self.path = out_dir / f'{safe}.mp4'
-        self.fps = fps
+        self.target_fps = fps
         self.writer: cv2.VideoWriter | None = None
         self.frames = 0
+        self.changed_frames = 0
+        self.max_frame_delta = 0.0
+        self._first_preview: np.ndarray | None = None
+        self._last_frame: np.ndarray | None = None
+        self._last_time_s: float | None = None
 
     def _ensure_writer(self, frame: np.ndarray) -> None:
         if self.writer is not None:
             return
         height, width = frame.shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        self.writer = cv2.VideoWriter(str(self.path), fourcc, self.fps, (width, height), True)
+        self.writer = cv2.VideoWriter(str(self.path), fourcc, self.target_fps, (width, height), True)
 
-    def write(self, frame: np.ndarray) -> None:
+    def write(self, frame: np.ndarray, time_s: float | None = None) -> None:
         if frame.ndim == 2:
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         self._ensure_writer(frame)
-        if self.writer is not None:
-            self.writer.write(frame)
-            self.frames += 1
+        if self.writer is None:
+            return
+
+        preview = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (32, 18))
+        if self._first_preview is None:
+            self._first_preview = preview
+        else:
+            delta = float(np.mean(cv2.absdiff(preview, self._first_preview)))
+            self.max_frame_delta = max(self.max_frame_delta, delta)
+            if delta > 0.5:
+                self.changed_frames += 1
+
+        # If timestamps are provided and we have a previous frame, bridge gaps if any
+        if time_s is not None and self._last_time_s is not None and self._last_frame is not None:
+            dt = time_s - self._last_time_s
+            frame_interval = 1.0 / self.target_fps
+            # If gap is larger than 1.5x frame_interval, duplicate previous frame to preserve real flight timing
+            if dt > 1.5 * frame_interval:
+                duplicate_count = min(int(dt / frame_interval) - 1, 90) # cap max fill at 3s
+                for _ in range(duplicate_count):
+                    self.writer.write(self._last_frame)
+                    self.frames += 1
+
+        self.writer.write(frame)
+        self.frames += 1
+        self._last_frame = frame
+        self._last_time_s = time_s
 
     def close(self) -> None:
         if self.writer is not None:
             self.writer.release()
+
 
 
 class BagAnalyzer:
@@ -279,12 +309,12 @@ class BagAnalyzer:
             frame = image_msg_to_bgr(msg)
             sink = self._video(topic)
             if frame is not None and sink is not None:
-                sink.write(frame)
+                sink.write(frame, time_s=time_s)
         elif self.export_video and self.bag.topic_types.get(topic) == 'sensor_msgs/msg/CompressedImage':
             frame = compressed_image_to_bgr(msg)
             sink = self._video(topic)
             if frame is not None and sink is not None:
-                sink.write(frame)
+                sink.write(frame, time_s=time_s)
 
     def print_report(self) -> None:
         active_topics = {t: c for t, c in self.bag.topic_counts.items() if c > 0}
@@ -347,7 +377,15 @@ class BagAnalyzer:
             if self.export_video:
                 if self.video_sinks:
                     for topic, sink in self.video_sinks.items():
-                        print(f'  Video for {topic}: {sink.path} ({sink.frames} frames)')
+                        print(
+                            f'  Video for {topic}: {sink.path} ({sink.frames} frames, '
+                            f'{sink.changed_frames} changed, max delta {sink.max_frame_delta:.2f})'
+                        )
+                        if sink.frames > 1 and sink.changed_frames == 0:
+                            print(
+                                f'  WARNING: {topic} decoded successfully but every frame '
+                                'matches the first frame; inspect Gazebo sensor pose/rendering.'
+                            )
                 else:
                     print('  No videos written because no image topics were present.')
 
@@ -374,26 +412,36 @@ def format_landed_states(states: list[tuple[float, int]]) -> str:
 
 
 def image_msg_to_bgr(msg: Any) -> np.ndarray | None:
-    data = np.frombuffer(msg.data, dtype=np.uint8)
     height = int(msg.height)
     width = int(msg.width)
     encoding = str(msg.encoding).lower()
+    step = int(msg.step) if int(msg.step) > 0 else 0
+
+    def rows(dtype: np.dtype[Any], bytes_per_pixel: int) -> np.ndarray:
+        row_step = step or width * bytes_per_pixel
+        raw = np.frombuffer(msg.data, dtype=dtype)
+        values_per_row = row_step // np.dtype(dtype).itemsize
+        return raw.reshape((height, values_per_row))[:, :width * bytes_per_pixel // np.dtype(dtype).itemsize]
+
     try:
         if encoding in ('rgb8', 'bgr8'):
-            frame = data.reshape((height, width, 3))
+            frame = rows(np.dtype(np.uint8), 3).reshape((height, width, 3))
             return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if encoding == 'rgb8' else frame
         if encoding in ('rgba8', 'bgra8'):
-            frame = data.reshape((height, width, 4))
+            frame = rows(np.dtype(np.uint8), 4).reshape((height, width, 4))
             code = cv2.COLOR_RGBA2BGR if encoding == 'rgba8' else cv2.COLOR_BGRA2BGR
             return cv2.cvtColor(frame, code)
         if encoding in ('mono8', '8uc1'):
-            return data.reshape((height, width))
-        if encoding in ('32fc1', '32fc', '32fc3'):
-            depth_data = np.frombuffer(msg.data, dtype=np.float32).reshape((height, width))
+            return rows(np.dtype(np.uint8), 1).reshape((height, width))
+        if encoding in ('mono16', '16uc1'):
+            mono16 = rows(np.dtype(np.uint16), 2).reshape((height, width))
+            return cv2.convertScaleAbs(mono16, alpha=255.0 / max(1.0, float(np.max(mono16))))
+        if encoding in ('32fc1', '32fc'):
+            depth_data = rows(np.dtype(np.float32), 4).reshape((height, width))
             depth_clean = np.nan_to_num(depth_data, nan=0.0, posinf=10.0, neginf=0.0)
             depth_norm = np.clip(depth_clean / 5.0 * 255.0, 0, 255).astype(np.uint8)
             return cv2.applyColorMap(depth_norm, cv2.COLORMAP_JET)
-    except ValueError:
+    except (TypeError, ValueError):
         return None
     return None
 
