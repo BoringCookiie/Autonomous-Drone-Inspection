@@ -5,6 +5,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 # /opt/ros/*/setup.bash uses bash-isms (arrays); RUN defaults to /bin/sh otherwise
 SHELL ["/bin/bash", "-c"]
+ENV GZ_VERSION=harmonic
 
 # 1. Base dependencies and Gazebo/PX4 build tooling
 RUN apt-get update && apt-get install -y \
@@ -22,14 +23,14 @@ RUN apt-get update && apt-get install -y \
     sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# Ajout de la clé GPG et du dépôt officiel Gazebo (pour Garden/Sim8)
+# Add the official Gazebo repository for the PX4 v1.15 Gazebo Harmonic stack.
 RUN curl https://packages.osrfoundation.org/gazebo.gpg --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null
 
 # 2. Installation des dépendances Gazebo, Navigation et Mapping
 RUN apt-get update && apt-get install -y \
     libgz-sim8-dev \
-    gz-garden \
+    gz-harmonic \
     python3-gz-msgs10 \
     python3-gz-transport13 \
     ros-humble-rtabmap-ros \
@@ -45,8 +46,22 @@ RUN apt-get update && apt-get install -y \
     ros-humble-ros-gz-bridge \
     ros-humble-ros-gz-image \
     ros-humble-rviz2 \
-    && /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh \
-    && rm -rf /var/lib/apt/lists/*
+     && /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh \
+     && rm -rf /var/lib/apt/lists/*
+
+# Rebuild the bridge against Gazebo Harmonic. The Ubuntu ROS Humble binary
+# defaults to the Fortress message family unless GZ_VERSION is set, which
+# produces silent image drops and "Unknown message type" warnings here.
+RUN git clone --depth=1 --branch humble https://github.com/gazebosim/ros_gz.git /tmp/ros_gz_src && \
+    source /opt/ros/humble/setup.bash && \
+    colcon build \
+      --base-paths /tmp/ros_gz_src \
+      --packages-select ros_gz_bridge ros_gz_image \
+      --build-base /tmp/ros_gz_build \
+      --install-base /opt/ros_gz_harmonic \
+      --merge-install \
+      --cmake-args -DBUILD_TESTING=OFF && \
+    rm -rf /tmp/ros_gz_src /tmp/ros_gz_build
 
 # 3. Setup Python dependencies for PX4
 # These are the most common requirements to avoid long wait times during bootstrap
