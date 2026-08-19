@@ -241,6 +241,8 @@ class PathFollower(Node):
             time.sleep(0.3)
 
         if self.state.armed:
+            self.get_logger().info('>>> Drone ARMED and in OFFBOARD mode! Lifting off to 1.5m...')
+
         # Climb to takeoff altitude
         z_start = self.pose.pose.position.z if self.pose else 0.0
         t_start = time.time()
