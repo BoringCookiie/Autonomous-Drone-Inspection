@@ -188,6 +188,9 @@ class PathFollower(Node):
             ('CBRK_IO_SAFETY', '22027'),
             ('CBRK_SUPPLY_CHK', '894281'),
             ('COM_LOW_BAT_ACT', '0'),
+            ('BAT_LOW_THR', '0.0'),
+            ('BAT_CRIT_THR', '0.0'),
+            ('BAT_EMERGEN_THR', '0.0'),
             ('COM_DISARM_PRFLT', '0'),
             ('COM_RCL_EXCEPT', '4'),
             ('NAV_RCL_ACT', '0'),
@@ -269,6 +272,10 @@ class PathFollower(Node):
         status_msg = String()
         status_msg.data = self.current_status
         self.status_pub.publish(status_msg)
+
+        # Enforce OFFBOARD mode during active flight
+        if not self.low_battery and self.state.armed and self.state.mode != 'OFFBOARD':
+            self._call_set_mode('OFFBOARD')
 
         if self.low_battery:
             # Emergency RTH
