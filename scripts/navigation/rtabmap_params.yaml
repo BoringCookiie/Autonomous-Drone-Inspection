@@ -1,5 +1,6 @@
 rtabmap:
   ros__parameters:
+    use_sim_time: true
     subscribe_depth: true
     subscribe_rgb: true
     frame_id: "base_link"

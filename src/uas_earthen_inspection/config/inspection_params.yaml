@@ -27,9 +27,14 @@
     d_min: 1.0    # Minimum safe clearance distance in meters
     k_standoff: 2.0 # Scaling factor for confidence uncertainty
 
-    # Camera Intrinsics Parameters (Gazebo / Real Camera Model)
-    fx: 525.0
-    fy: 525.0
+    # Camera Intrinsics Parameters — x500_depth SDF model
+    # Derived from: hFOV = 1.204 rad, image 640x480
+    #   vFOV = 2 * atan(tan(hFOV/2) * (height/width)) = 2 * atan(tan(0.602) * 0.75)
+    #   fy   = (height/2) / tan(vFOV/2) = 240 / tan(0.4517) ≈ 381.36
+    #   fx   = (width/2)  / tan(hFOV/2) = 320 / tan(0.602)  ≈ 381.36  (square pixels)
+    # NOTE: real values are latched at runtime from /camera/color/camera_info if available
+    fx: 381.36
+    fy: 381.36
     cx: 320.0
     cy: 240.0
     image_width: 640

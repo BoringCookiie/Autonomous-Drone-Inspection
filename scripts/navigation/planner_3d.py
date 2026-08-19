@@ -4,6 +4,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseArray, PoseStamped
 from nav_msgs.msg import Path
 from sensor_msgs.msg import PointCloud2
+from std_msgs.msg import String
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 import sensor_msgs_py.point_cloud2 as pc2
 import numpy as np
@@ -16,18 +17,26 @@ class Planner3D(Node):
         self.inflation_radius = 2  # nodes (0.4m)
         self.obstacles = set()
         self.pose = None
-        
+
+        # FIFO queue of revisit Pose objects (from /planner/revisit_waypoints PoseArrays)
+        self._revisit_queue: list = []
+        self._revisit_active = False  # True while a revisit leg is being executed
+
         # QoS for MAVROS topics (Best Effort)
         qos_best_effort = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
-        
+
         self.pc_sub = self.create_subscription(PointCloud2, '/octomap_point_cloud_centers', self.pc_cb, 10)
         self.pose_sub = self.create_subscription(PoseStamped, '/uas1/local_position/pose', self.pose_cb, qos_best_effort)
         self.goal_sub = self.create_subscription(PoseStamped, '/navigation/goal', self.goal_cb, 10)
         self.revisit_sub = self.create_subscription(
             PoseArray, '/planner/revisit_waypoints', self.revisit_cb, 10
         )
+        # Listen to path_follower status so we can dequeue the next revisit leg
+        self.status_sub = self.create_subscription(
+            String, '/path_follower/status', self._follower_status_cb, 10
+        )
         self.path_pub = self.create_publisher(Path, '/planned_path', 10)
-        self.get_logger().info("Planner 3D (A* with Inflation) initialized.")
+        self.get_logger().info("Planner 3D (A* with Inflation, FIFO revisit queue) initialized.")
 
     def pc_cb(self, msg):
         new_obs = set()
@@ -50,13 +59,45 @@ class Planner3D(Node):
         self.plan(msg.pose)
 
     def revisit_cb(self, msg):
-        """Route inspection revisit poses through the same A* implementation."""
+        """
+        Accumulate revisit poses into a FIFO queue.
+        Does NOT plan immediately — prevents the 'last path wins' overwrite bug.
+        The next pose is dequeued and planned when path_follower reports
+        COVERAGE_DONE or REVISIT_LEG_DONE on /path_follower/status.
+        """
         if not self.pose:
-            self.get_logger().warn("Current pose unknown; delaying revisit route")
-            return
+            self.get_logger().warn("Current pose unknown; queuing revisit poses anyway.")
         for pose in msg.poses:
-            self.get_logger().info("Planning an inspection revisit waypoint")
-            self.plan(pose)
+            self._revisit_queue.append(pose)
+            self.get_logger().info(
+                f"Revisit pose queued ({len(self._revisit_queue)} total in queue)."
+            )
+
+    def _follower_status_cb(self, msg):
+        """
+        React to path_follower status signals:
+          COVERAGE_DONE  — primary lawnmower pass finished; start first revisit leg (if any).
+          REVISIT_LEG_DONE — a revisit leg finished; plan the next one (if any).
+        """
+        status = msg.data
+        if status in ('COVERAGE_DONE', 'REVISIT_LEG_DONE'):
+            self._plan_next_revisit()
+
+    def _plan_next_revisit(self):
+        """Pop the next revisit pose from the queue and run A* for it."""
+        if not self._revisit_queue:
+            self.get_logger().info("Revisit queue empty — no more revisit legs.")
+            return
+        if not self.pose:
+            self.get_logger().warn("Pose unavailable; cannot plan revisit leg yet.")
+            return
+        next_pose = self._revisit_queue.pop(0)
+        self.get_logger().info(
+            f"Planning revisit leg "
+            f"({next_pose.position.x:.2f}, {next_pose.position.y:.2f}, {next_pose.position.z:.2f}), "
+            f"{len(self._revisit_queue)} leg(s) remaining."
+        )
+        self.plan(next_pose)
 
     def plan(self, goal_pose):
         start = (round(self.pose.position.x/self.res), round(self.pose.position.y/self.res), round(self.pose.position.z/self.res))

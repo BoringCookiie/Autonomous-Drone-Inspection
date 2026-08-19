@@ -14,9 +14,10 @@ Description:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2DArray
-from geometry_msgs.msg import PoseArray, Pose, Point, Quaternion
+from geometry_msgs.msg import PoseArray, Pose, PoseStamped, Point, Quaternion
 from nav_msgs.msg import Path
 from cv_bridge import CvBridge, CvBridgeError
 import numpy as np
@@ -71,6 +72,10 @@ class RevisitWaypointGenerator(Node):
 
         self.bridge = CvBridge()
         self.latest_depth_img = None
+        self.drone_pose: PoseStamped | None = None  # live vehicle pose from MAVROS
+
+        # QoS for MAVROS topics (Best Effort)
+        qos_be = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
 
         # Subscriptions
         self.sub_detections = self.create_subscription(
@@ -78,6 +83,11 @@ class RevisitWaypointGenerator(Node):
         )
         self.sub_depth = self.create_subscription(
             Image, self.depth_topic, self.depth_callback, 10
+        )
+        # Vehicle pose for camera-frame → map-frame transform (no TF2 required)
+        self.sub_pose = self.create_subscription(
+            PoseStamped, '/uas1/local_position/pose',
+            self._pose_cb, qos_be
         )
 
         # Publisher for revisit waypoints to A* planner
@@ -99,6 +109,43 @@ class RevisitWaypointGenerator(Node):
             self.latest_depth_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
         except CvBridgeError as e:
             self.get_logger().error(f"Depth CV Bridge error: {e}")
+
+    def _pose_cb(self, msg: PoseStamped):
+        """Cache the latest vehicle pose for coordinate transforms."""
+        self.drone_pose = msg
+
+    def _yaw_from_quaternion(self, q) -> float:
+        """Extract yaw (psi) from a geometry_msgs Quaternion. No TF2 required."""
+        # Standard ZYX Euler decomposition:
+        #   psi = atan2(2*(qw*qz + qx*qy), 1 - 2*(qy^2 + qz^2))
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        return math.atan2(siny_cosp, cosy_cosp)
+
+    def camera_to_map_frame(self, x_cam: float, y_cam: float, z_cam: float):
+        """
+        Transform optical-frame camera coordinates to world map frame using
+        the vehicle's current position and yaw (psi).
+
+        The x500 camera faces +Y in the world (yaw=pi/2). The optical frame
+        has Z pointing forward (into the wall), X pointing right, Y pointing down.
+
+        Map-frame formulas (derived in blueprint §F, verified in session analysis):
+            X_map = x_drone + Z_cam*cos(psi) - X_cam*sin(psi)
+            Y_map = y_drone + Z_cam*sin(psi) + X_cam*cos(psi)
+            Z_map = z_drone - Y_cam
+
+        Returns (x_map, y_map, z_map) or None if pose is unavailable.
+        """
+        if self.drone_pose is None:
+            return None
+        p = self.drone_pose.pose.position
+        psi = self._yaw_from_quaternion(self.drone_pose.pose.orientation)
+
+        x_map = p.x + z_cam * math.cos(psi) - x_cam * math.sin(psi)
+        y_map = p.y + z_cam * math.sin(psi) + x_cam * math.cos(psi)
+        z_map = p.z - y_cam
+        return x_map, y_map, z_map
 
     def unproject_2d_to_3d(self, u: float, v: float, depth: float):
         """
@@ -157,29 +204,42 @@ class RevisitWaypointGenerator(Node):
                 else:
                     depth_z = 3.0
 
-                # 1. Unproject 2D bbox to 3D target coordinates
-                target_x, target_y, target_z = self.unproject_2d_to_3d(u, v, depth_z)
+                # 1. Unproject 2D bbox center → 3D camera-frame coordinates
+                target_cam_x, target_cam_y, target_cam_z = self.unproject_2d_to_3d(u, v, depth_z)
 
-                # 2. Calculate closer standoff distance
+                # 2. Transform camera-frame → world map-frame using vehicle pose + yaw
+                world_coords = self.camera_to_map_frame(target_cam_x, target_cam_y, target_cam_z)
+                if world_coords is None:
+                    self.get_logger().warn(
+                        "Drone pose unavailable; skipping revisit waypoint (will retry on next detection)."
+                    )
+                    continue
+                target_map_x, target_map_y, target_map_z = world_coords
+
+                # 3. Calculate closer standoff distance
                 d_revisit = self.compute_revisit_standoff(conf)
 
-                # 3. Calculate revisit waypoint pose (offset towards origin by standoff distance)
-                scale = d_revisit / max(0.001, target_z)
-                revisit_x = target_x * scale
-                revisit_y = target_y * scale
-                revisit_z = target_z * scale
+                # 4. Build revisit waypoint: pull drone towards the wall target at d_revisit standoff.
+                #    The drone approaches from -Y (drone is at smaller Y, wall at larger Y).
+                #    Revisit pose keeps X, Z at the target but sets Y = target_map_y - d_revisit.
+                revisit_x = target_map_x
+                revisit_y = target_map_y - d_revisit
+                revisit_z = target_map_z
 
                 pose = Pose()
                 pose.position.x = revisit_x
                 pose.position.y = revisit_y
                 pose.position.z = revisit_z
-                pose.orientation.w = 1.0
+                # Yaw = pi/2 — keep facing the wall during revisit
+                pose.orientation.z = math.sin(math.pi / 4.0)  # sin(yaw/2) where yaw=pi/2
+                pose.orientation.w = math.cos(math.pi / 4.0)
 
                 revisit_poses.poses.append(pose)
 
                 self.get_logger().info(
-                    f"  -> Generated 3D Revisit Waypoint:\n"
-                    f"     Target 3D: ({target_x:.2f}, {target_y:.2f}, {target_z:.2f})\n"
+                    f"  -> Generated 3D Revisit Waypoint (MAP FRAME):\n"
+                    f"     Camera frame: ({target_cam_x:.2f}, {target_cam_y:.2f}, {target_cam_z:.2f})\n"
+                    f"     Map frame target: ({target_map_x:.2f}, {target_map_y:.2f}, {target_map_z:.2f})\n"
                     f"     Standoff D_revisit: {d_revisit:.2f}m\n"
                     f"     Revisit Pose: ({revisit_x:.2f}, {revisit_y:.2f}, {revisit_z:.2f})"
                 )

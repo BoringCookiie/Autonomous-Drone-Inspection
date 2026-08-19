@@ -25,6 +25,7 @@ set -u
 RGB_ROS_TOPIC="${ROS_CAMERA_TOPIC:-/camera/color/image_raw}"
 RGB_INFO_ROS_TOPIC="${ROS_CAMERA_INFO_TOPIC:-/camera/color/camera_info}"
 DEPTH_ROS_TOPIC="${ROS_DEPTH_TOPIC:-/camera/depth/image_raw}"
+POINTS_ROS_TOPIC="${ROS_POINTS_TOPIC:-/points}"
 
 wait_for_gz_topics() {
   local timeout="${BRIDGE_CAMERA_WAIT_SEC:-120}"
@@ -52,8 +53,10 @@ select_topic() {
   local override=""
   if [[ "$kind" == rgb ]]; then
     override="${GZ_CAMERA_TOPIC:-}"
-  else
+  elif [[ "$kind" == depth ]]; then
     override="${GZ_DEPTH_TOPIC:-}"
+  elif [[ "$kind" == points ]]; then
+    override="${GZ_POINTS_TOPIC:-}"
   fi
 
   if [[ -n "$override" ]]; then
@@ -74,9 +77,16 @@ select_topic() {
           return 0
           ;;
       esac
-    else
+    elif [[ "$kind" == depth ]]; then
       case "$candidate" in
         *depth_camera*|*depth_image|*/depth|*/depth_raw)
+          printf '%s' "$candidate"
+          return 0
+          ;;
+      esac
+    elif [[ "$kind" == points ]]; then
+      case "$candidate" in
+        */points|*/point_cloud|*/pointcloud)
           printf '%s' "$candidate"
           return 0
           ;;
@@ -106,6 +116,7 @@ while true; do
   rgb_topic="$(select_topic rgb "$gz_topics" || true)"
   rgb_info_topic="${GZ_CAMERA_INFO_TOPIC:-}"
   depth_topic="$(select_topic depth "$gz_topics" || true)"
+  points_topic="$(select_topic points "$gz_topics" || true)"
 
   if [[ -z "$rgb_topic" ]]; then
     echo "[camera_bridge] No RGB image topic found. Current Gazebo topics:" >&2
@@ -146,6 +157,13 @@ while true; do
     bridge_topic "$depth_topic" "$DEPTH_ROS_TOPIC" sensor_msgs/msg/Image "${TYPE_PREFIX}.msgs.Image"
   else
     echo "[camera_bridge] No depth topic found; depth remains unavailable for this model"
+  fi
+  # Phase 2: PointCloud2 bridge for OctoMap (gz_x500_depth model only).
+  # The gz_x500_mono_cam model does not publish a /points topic; this is silently skipped.
+  if [[ -n "$points_topic" ]]; then
+    bridge_topic "$points_topic" "$POINTS_ROS_TOPIC" sensor_msgs/msg/PointCloud2 "${TYPE_PREFIX}.msgs.PointCloudPacked"
+  else
+    echo "[camera_bridge] No pointcloud topic found; /points will remain unpublished (mono-cam model)"
   fi
 
   if ! ros2 run ros_gz_bridge parameter_bridge "${BRIDGE_ARGS[@]}" --ros-args "${BRIDGE_REMAPS[@]}"; then

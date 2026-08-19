@@ -86,8 +86,12 @@ docker exec $CONTAINER bash -c "source /opt/ros/humble/setup.bash && {
 } && echo '[Master] Configuration complétée.' || echo '[Warning] Configuration partielle - continuant...'"
 
 # 5. Lancement de la pile de navigation
-echo "[Master] Lancement de la pile de navigation (RTAB-Map, OctoMap, Planner, Follower)..."
-docker exec -d $CONTAINER bash -c "source /opt/ros/humble/setup.bash && export PYTHONPATH=\$PYTHONPATH:/home/uas/scripts && ros2 launch /home/uas/scripts/navigation/navigation_launch.py"
+HAS_DEPTH="false"
+if [[ "${PX4_GZ_MODEL_TARGET:-gz_x500_depth}" == *depth* ]]; then
+    HAS_DEPTH="true"
+fi
+echo "[Master] Lancement de la pile de navigation (has_depth=${HAS_DEPTH})..."
+docker exec -d $CONTAINER bash -c "source /opt/ros/humble/setup.bash && export PYTHONPATH=\$PYTHONPATH:/home/uas/scripts && ros2 launch /home/uas/scripts/navigation/navigation_launch.py has_depth:=${HAS_DEPTH}"
 
 # Build and launch the inspection package against the migrated runtime.
 echo "[Master] Construction de la pile d'inspection..."
@@ -98,8 +102,8 @@ echo "[Master] Lancement de l'inspection (${DETECTOR_BACKEND}, ${FLIGHT_STRATEGY
 docker exec -d $CONTAINER bash -c "source /opt/ros/humble/setup.bash && source /home/uas/ros2_ws/install/setup.bash && ros2 launch uas_earthen_inspection inspection_pipeline.launch.py detector_backend:=${DETECTOR_BACKEND} flight_strategy:=${FLIGHT_STRATEGY}"
 
 # Attente pour laisser l'OctoMap et RTAB-Map se construire
-echo "[Master] Attente de l'initialisation de la pile de navigation (30s)..."
-for i in {1..30}; do
+echo "[Master] Attente de l'initialisation de la pile de navigation (15s)..."
+for i in {1..15}; do
     echo -n "."
     sleep 1
 done
@@ -107,8 +111,12 @@ echo -e "\n[Master] Vérification des nœuds de navigation..."
 
 # Vérification que les nœuds cruciaux sont bien lancés
 NODES_OK=1
-for node in "/rtabmap" "/octomap_server" "/planner_3d" "/path_follower"; do
-    if ! docker exec $CONTAINER bash -c "source /opt/ros/humble/setup.bash && ros2 node list" | grep -q $node; then
+CHECK_NODES=("/planner_3d" "/path_follower" "/coverage_planner")
+if [ "$HAS_DEPTH" = "true" ]; then
+    CHECK_NODES+=("/octomap_server")
+fi
+for node in "${CHECK_NODES[@]}"; do
+    if ! docker exec $CONTAINER bash -c "source /opt/ros/humble/setup.bash && ros2 node list" | grep -q "^${node}$"; then
         echo "[Error] Le nœud $node n'est pas démarré."
         NODES_OK=0
     fi
