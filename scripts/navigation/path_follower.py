@@ -239,6 +239,13 @@ class PathFollower(Node):
         for _ in range(10):
             if self.state.mode == 'OFFBOARD':
                 break
+            try:
+                subprocess.run(
+                    ['/home/uas/PX4-Autopilot/build/px4_sitl_default/bin/px4-commander', 'mode', 'offboard'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.0
+                )
+            except Exception:
+                pass
             req = SetMode.Request(custom_mode='OFFBOARD')
             self.mode_cli.call_async(req)
             time.sleep(0.3)
@@ -372,6 +379,14 @@ class PathFollower(Node):
         return math.sqrt((p.x - x)**2 + (p.y - y)**2 + (p.z - z)**2)
 
     def _call_set_mode(self, mode: str):
+        if mode == 'OFFBOARD':
+            try:
+                subprocess.run(
+                    ['/home/uas/PX4-Autopilot/build/px4_sitl_default/bin/px4-commander', 'mode', 'offboard'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.0
+                )
+            except Exception:
+                pass
         req = SetMode.Request(custom_mode=mode)
         self.mode_cli.call_async(req)
 
