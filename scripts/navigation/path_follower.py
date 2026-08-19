@@ -26,10 +26,11 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from mavros_msgs.msg import State
+from mavros_msgs.srv import SetMode, CommandBool
 from sensor_msgs.msg import BatteryState
-from mavros_msgs.srv import SetMode, CommandBool, ParamSetV2
-from rcl_interfaces.msg import ParameterType
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import String
 import numpy as np
 
@@ -379,16 +380,16 @@ class PathFollower(Node):
         return math.sqrt((p.x - x)**2 + (p.y - y)**2 + (p.z - z)**2)
 
     def _call_set_mode(self, mode: str):
+        req = SetMode.Request(custom_mode=mode)
+        self.mode_cli.call_async(req)
         if mode == 'OFFBOARD':
             try:
-                subprocess.run(
-                    ['/home/uas/PX4-Autopilot/build/px4_sitl_default/bin/px4-commander', 'mode', 'offboard'],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.0
+                subprocess.Popen(
+                    ['ros2', 'service', 'call', '/uas1/set_mode', 'mavros_msgs/srv/SetMode', '{custom_mode: "OFFBOARD"}'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                 )
             except Exception:
                 pass
-        req = SetMode.Request(custom_mode=mode)
-        self.mode_cli.call_async(req)
 
     def _publish_status(self, status: str):
         self.current_status = status
@@ -399,8 +400,14 @@ class PathFollower(Node):
 
 def main():
     rclpy.init()
-    rclpy.spin(PathFollower())
-    rclpy.shutdown()
+    node = PathFollower()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    try:
+        executor.spin()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
