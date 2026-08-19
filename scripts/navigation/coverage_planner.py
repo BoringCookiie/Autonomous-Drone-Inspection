@@ -40,10 +40,10 @@ class CoveragePlanner(Node):
         # ---- Facade geometry parameters ---------------------------------------
         # Wall SDF: pose (0, 5, 2), size 10 x 0.5 x 4.
         # We scan X in [facade_x_min, facade_x_max], Z in [alt_min, alt_max].
-        self.declare_parameter('facade_x_min', -4.5)
-        self.declare_parameter('facade_x_max',  4.5)
-        self.declare_parameter('alt_min',        1.0)   # min inspection altitude (m)
-        self.declare_parameter('alt_max',        3.5)   # max inspection altitude (m)
+        self.declare_parameter('facade_x_min', -4.0)
+        self.declare_parameter('facade_x_max',  4.0)
+        self.declare_parameter('alt_min',        1.8)   # min inspection altitude (m)
+        self.declare_parameter('alt_max',        3.2)   # max inspection altitude (m)
         self.declare_parameter('standoff_d',     2.5)   # distance from wall face (m)
         self.declare_parameter('wall_y',         5.0)   # wall centre Y in world (m)
         self.declare_parameter('overlap_ratio',  0.3)   # strip overlap rho

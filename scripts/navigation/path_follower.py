@@ -294,10 +294,10 @@ class PathFollower(Node):
                 self.get_logger().info('Home reached — landing.')
                 self._call_set_mode('AUTO.LAND')
         elif self.taking_off:
-            # Climb to 1.5 m while streaming setpoints (OFFBOARD pre-condition)
+            # Climb and position in front of wall at 2.0 m while streaming setpoints
             sp.pose.position.x = 0.0
-            sp.pose.position.y = 0.0
-            sp.pose.position.z = 1.5
+            sp.pose.position.y = 2.25
+            sp.pose.position.z = 2.0
         elif self.path:
             # ---- Waypoint tracking (preserves orientation for yaw) -----------
             target: PoseStamped = self.path[0]
