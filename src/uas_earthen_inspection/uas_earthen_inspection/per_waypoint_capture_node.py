@@ -18,7 +18,6 @@ from std_msgs.msg import String, Int32
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import os
-import json
 from datetime import datetime
 
 
@@ -44,7 +43,7 @@ class PerWaypointCaptureNode(Node):
         self.trigger_topic = self.get_parameter('waypoint_reached_topic').value
         self.out_frame_topic = self.get_parameter('captured_frame_topic').value
         self.save_frames = self.get_parameter('save_captured_frames').value
-        self.output_dir = self.get_parameter('output_dir').value
+        self.output_dir = resolve_project_path(self.get_parameter('output_dir').value)
 
         # Initialize CV Bridge & State Variables
         self.bridge = CvBridge()
@@ -117,6 +116,14 @@ class PerWaypointCaptureNode(Node):
     # Implementation logic extension points:
     # 1. Synchronize RGB and Depth image timestamps using message_filters.TimeSynchronizer.
     # 2. Add UAV pose extraction from TF2/vehicle_pose topic at capture moment.
+
+
+def resolve_project_path(value: str) -> str:
+    """Resolve repository-relative paths when launched from an installed ROS workspace."""
+    if os.path.isabs(value):
+        return value
+    root = os.environ.get('UAS_INSPECTION_ROOT', os.getcwd())
+    return os.path.join(root, value)
 
 
 def main(args=None):

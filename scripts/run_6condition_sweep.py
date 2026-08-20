@@ -29,6 +29,10 @@ MATRIX_CONDITIONS = [
 
 
 def run_sweep(output_dir: str, mock: bool = True):
+    if not mock:
+        raise RuntimeError(
+            'The real six-condition runner is not implemented yet; use --mock only for pipeline smoke tests.'
+        )
     os.makedirs(output_dir, exist_ok=True)
     print("=" * 70)
     print(" Executing 6-Condition Automated Evaluation Sweep")
@@ -96,7 +100,7 @@ def run_sweep(output_dir: str, mock: bool = True):
 def main():
     parser = argparse.ArgumentParser(description="Run 6-Condition Matrix Evaluation Sweep")
     parser.add_argument("--output-dir", default="results/sweeps", help="Directory to store JSON logs")
-    parser.add_argument("--mock", action="store_true", default=True, help="Use simulated metrics run")
+    parser.add_argument("--mock", action="store_true", help="Use simulated metrics run (never publish as results)")
     args = parser.parse_args()
 
     run_sweep(args.output_dir, args.mock)

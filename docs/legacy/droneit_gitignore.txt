@@ -1,0 +1,56 @@
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Docker / runtime debug output
+.debug/
+*.log
+
+# Generated codebase dump
+codebase_dump.text
+
+# ROS 2 build outputs
+build/
+install/
+log/
+shared/ros2_ws/build/
+shared/ros2_ws/install/
+shared/ros2_ws/log/
+
+# ROS bag recordings and exported analyses/videos
+shared/rosbags/*
+!shared/rosbags/.gitkeep
+*.db3
+*.mcap
+
+# Datasets and model weights are large/local artifacts
+shared/datasets/*
+!shared/datasets/.gitkeep
+shared/weights/*
+!shared/weights/.gitkeep
+
+# PX4/Gazebo local artifacts if created outside Docker volumes
+PX4-Autopilot/
+Tools/simulation/gz/
+*.ulg
+*.bson
+dataman
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~

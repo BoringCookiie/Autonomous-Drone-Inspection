@@ -3,12 +3,16 @@
     # Sensor Topics & Frames
     camera_rgb_topic: "/camera/color/image_raw"
     camera_depth_topic: "/camera/depth/image_raw"
+    camera_info_topic: "/camera/color/camera_info"
+    setpoint_topic: "/uas1/setpoint_position/local"
+    pose_topic: "/uas1/local_position/pose"
     waypoint_reached_topic: "/uav/waypoint_reached"
     captured_frame_topic: "/inspection/captured_frame"
+    save_captured_frames: true
+    output_dir: "/home/uas/rosbags/inspection_frames"
     detections_topic: "/inspection/detections"
     revisit_waypoints_topic: "/planner/revisit_waypoints"
     uav_pose_topic: "/uas1/local_position/pose"
-    setpoint_topic: "/uas1/setpoint_position/local"
 
     # Execution Parameters (Launch matrix configuration)
     detector_backend: "rag_vlm" # Options: raw_vlm | rag_vlm | yolo

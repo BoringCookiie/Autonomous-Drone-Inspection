@@ -1,0 +1,27 @@
+rtabmap:
+  ros__parameters:
+    subscribe_depth: true
+    subscribe_rgb: true
+    frame_id: "base_link"
+    map_frame_id: "map"
+    odom_frame_id: "odom"
+    publish_tf: true
+    wait_for_transform: 0.2
+    
+    # Drone optimized updates
+    RGBD/LinearUpdate: "0.05"
+    RGBD/AngularUpdate: "0.02"
+    RGBD/OptimizeFromGraphEnd: "true"
+    
+    # Grid/Mapping
+    Grid/FromDepth: "true"
+    Grid/MaxObstacleHeight: "3.0"
+    Grid/MinGroundHeight: "0.2"
+    Grid/RangeMax: "7.0"
+    Grid/CellSize: "0.2"
+    Grid/RayTracing: "true"
+    Grid/3D: "true"
+    
+    # SLAM Mode
+    Mem/IncrementalMemory: "true"
+    Mem/InitWMWithAllNodes: "false"

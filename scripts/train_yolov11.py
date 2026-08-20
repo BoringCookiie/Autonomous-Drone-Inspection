@@ -11,6 +11,7 @@ Description:
 
 import os
 import argparse
+import shutil
 
 
 def train_yolo(data_yaml: str, epochs: int, batch_size: int, output_weights: str):
@@ -25,7 +26,7 @@ def train_yolo(data_yaml: str, epochs: int, batch_size: int, output_weights: str
     try:
         from ultralytics import YOLO
         # Load baseline YOLOv11 small model
-        model = YOLO('yolov11s.pt')
+        model = YOLO('yolo11s.pt')
 
         if os.path.exists(data_yaml):
             print("[INFO] Starting PyTorch training loop...")
@@ -42,7 +43,7 @@ def train_yolo(data_yaml: str, epochs: int, batch_size: int, output_weights: str
             final_pt = os.path.join('models/yolo', 'train_run', 'weights', 'best.pt')
             if os.path.exists(final_pt):
                 os.makedirs(os.path.dirname(output_weights), exist_ok=True)
-                os.system(f"cp {final_pt} {output_weights}")
+                shutil.copy2(final_pt, output_weights)
                 print(f"[SUCCESS] Trained weights saved to {output_weights}")
         else:
             print(f"[WARNING] Data yaml file '{data_yaml}' not found. Please populate data/ directory first.")

@@ -305,12 +305,12 @@ class DetectionNode(Node):
         if self.backend_type == 'raw_vlm':
             self.detector = Qwen25VLDetector(mode='raw_vlm', rag_kb=None)
         elif self.backend_type == 'rag_vlm':
-            ontology_path = self.get_parameter('ontology_json_path').value
-            embeddings_path = self.get_parameter('clip_embeddings_path').value
+            ontology_path = resolve_project_path(self.get_parameter('ontology_json_path').value)
+            embeddings_path = resolve_project_path(self.get_parameter('clip_embeddings_path').value)
             rag_kb = RAGKnowledgeBase(ontology_path, embeddings_path)
             self.detector = Qwen25VLDetector(mode='rag_vlm', rag_kb=rag_kb)
         elif self.backend_type == 'yolo':
-            weights_path = self.get_parameter('yolo_weights_path').value
+            weights_path = resolve_project_path(self.get_parameter('yolo_weights_path').value)
             self.detector = YOLOv11Detector(weights_path)
         else:
             raise ValueError(f"Unknown detector backend: {self.backend_type}")

@@ -1,0 +1,9 @@
+# YOLO dataset manifest. Populate the referenced directories before training.
+path: earthen_augmented
+train: images/train
+val: images/val
+test: images/test
+names:
+  0: structural_crack
+  1: surface_erosion
+  2: moisture_stain

@@ -45,7 +45,7 @@ class RAGKnowledgeBase:
         self.ontology_path = resolve_project_path(ontology_json_path)
         self.embeddings_path = resolve_project_path(embeddings_path)
         self.clip_model_name = clip_model_name
-        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device or ('cuda' if (torch is not None and torch.cuda.is_available()) else 'cpu')
 
         # 1. Load defect ontology taxonomy metadata JSON
         self.defect_classes = self.load_knowledge_base(self.ontology_path)

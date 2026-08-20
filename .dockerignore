@@ -1,0 +1,15 @@
+.git
+build
+install
+log
+__pycache__
+*.pyc
+data/SDNET2018
+data/MBDD2025
+data/earthen_augmented
+data/evaluation_set
+models/yolo/*.pt
+models/embeddings/*.pt
+rosbags
+results/raw_logs
+results/sweeps
