@@ -2,10 +2,10 @@
 
 raw_vlm_prompt: |
   Inspect the provided image of an earthen heritage architectural wall for defects (e.g., structural_crack, surface_erosion, moisture_stain).
-  Output strictly in this format: [ymin, xmin, ymax, xmax] {class_name} Confidence: {score}
+  Output strictly as a JSON object in this format: {"detections": [{"class_id": "<defect_type>", "bbox_xyxy": [xmin, ymin, xmax, ymax], "confidence": <score_0_to_1>}]}
 
 rag_vlm_prompt: |
   Context from Earthen Architecture Knowledge Base: {retrieved_context}.
 
   Analyze the image using this context. If the defect matches the context, use the context's classification name.
-  Output strictly in this format: [ymin, xmin, ymax, xmax] {class_name} Confidence: {score}
+  Output strictly as a JSON object in this format: {"detections": [{"class_id": "<defect_type>", "bbox_xyxy": [xmin, ymin, xmax, ymax], "confidence": <score_0_to_1>}]}

@@ -7,7 +7,8 @@
     captured_frame_topic: "/inspection/captured_frame"
     detections_topic: "/inspection/detections"
     revisit_waypoints_topic: "/planner/revisit_waypoints"
-    uav_pose_topic: "/px4/vehicle_pose"
+    uav_pose_topic: "/uas1/local_position/pose"
+    setpoint_topic: "/uas1/setpoint_position/local"
 
     # Execution Parameters (Launch matrix configuration)
     detector_backend: "rag_vlm" # Options: raw_vlm | rag_vlm | yolo

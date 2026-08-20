@@ -20,6 +20,16 @@ from PIL import Image
 from typing import List, Dict, Any, Union
 
 
+def resolve_project_path(value: str) -> str:
+    """Resolve repository-relative model and knowledge-base paths using UAS_INSPECTION_ROOT."""
+    if os.path.isabs(value):
+        return value
+    root = os.environ.get('UAS_INSPECTION_ROOT', '/home/uas/')
+    if not os.path.exists(root):
+        root = os.getcwd()
+    return os.path.join(root, value)
+
+
 class RAGKnowledgeBase:
     """
     Decoupled Live RAG Knowledge Base using Pre-computed Offline CLIP Index.
@@ -32,8 +42,8 @@ class RAGKnowledgeBase:
         clip_model_name: str = "openai/clip-vit-base-patch32",
         device: str = None
     ):
-        self.ontology_path = ontology_json_path
-        self.embeddings_path = embeddings_path
+        self.ontology_path = resolve_project_path(ontology_json_path)
+        self.embeddings_path = resolve_project_path(embeddings_path)
         self.clip_model_name = clip_model_name
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -50,8 +60,9 @@ class RAGKnowledgeBase:
 
     def load_knowledge_base(self, json_path: str) -> List[Dict[str, Any]]:
         """Loads JSON file defining defect ontology and metadata descriptions."""
-        if not os.path.exists(json_path):
-            print(f"[RAGKnowledgeBase] Warning: Ontology file '{json_path}' not found. Using default taxonomy.")
+        resolved = resolve_project_path(json_path)
+        if not os.path.exists(resolved):
+            print(f"[RAGKnowledgeBase] Warning: Ontology file '{resolved}' not found. Using default taxonomy.")
             return [
                 {
                     "id": "structural_crack",
@@ -73,25 +84,26 @@ class RAGKnowledgeBase:
                 }
             ]
         
-        with open(json_path, 'r', encoding='utf-8') as f:
+        with open(resolved, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return data.get("defect_classes", [])
 
     def _load_cached_embeddings(self) -> Dict[str, torch.Tensor]:
         """Loads pre-computed PyTorch feature vectors built by `scripts/build_clip_embeddings.py`."""
-        if os.path.exists(self.embeddings_path):
+        resolved = resolve_project_path(self.embeddings_path)
+        if os.path.exists(resolved):
             try:
-                embeddings = torch.load(self.embeddings_path, map_location=self.device, weights_only=True)
-                print(f"[RAGKnowledgeBase] Successfully loaded pre-computed offline KB embeddings from: {self.embeddings_path}")
+                embeddings = torch.load(resolved, map_location=self.device, weights_only=True)
+                print(f"[RAGKnowledgeBase] Successfully loaded pre-computed offline KB embeddings from: {resolved}")
                 return embeddings
             except Exception:
                 try:
-                    embeddings = torch.load(self.embeddings_path, map_location=self.device)
+                    embeddings = torch.load(resolved, map_location=self.device)
                     return embeddings
                 except Exception as e:
                     print(f"[RAGKnowledgeBase] Error loading embeddings cache ({e}).")
         else:
-            print(f"[RAGKnowledgeBase] Notice: Offline embeddings file '{self.embeddings_path}' not found.")
+            print(f"[RAGKnowledgeBase] Notice: Offline embeddings file '{resolved}' not found.")
         return {}
 
     def _init_clip_encoder(self):
