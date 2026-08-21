@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Publish a capture trigger when the vehicle reaches a streamed setpoint."""
+"""
+waypoint_reached_node.py
+Publish a capture trigger when the vehicle reaches a streamed setpoint.
+
+Author: Autonomous UAV Inspection Team
+Description:
+    Adapts MAVROS setpoint and pose topics to trigger per-waypoint frame capture.
+"""
 
 import math
-
 import rclpy
-from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Int32
 
 

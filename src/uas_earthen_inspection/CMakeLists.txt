@@ -19,7 +19,7 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# Install directories (launch files, config, launch scripts)
+# Install directories (launch files, config)
 install(DIRECTORY
   launch
   config

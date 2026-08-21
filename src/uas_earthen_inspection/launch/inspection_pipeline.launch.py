@@ -32,7 +32,7 @@ def generate_launch_description():
     flight_strategy = LaunchConfiguration('flight_strategy')
     config_file = LaunchConfiguration('config_file')
 
-    # 1. Per-Waypoint Capture Node
+    # 1. Waypoint Reached Trigger Adaptor Node
     waypoint_reached_node = Node(
         package='uas_earthen_inspection',
         executable='waypoint_reached_node.py',

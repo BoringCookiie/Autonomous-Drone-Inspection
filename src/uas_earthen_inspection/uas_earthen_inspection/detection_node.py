@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
 detection_node.py
-Core AI Defect Detection Node supporting Raw VLM, RAG VLM, and YOLOv11 Backends.
+Core AI Defect Detection ROS2 Node with 4-bit Quantized Qwen2.5-VL, YOLOv11, and Strict Grounding Parsing.
 
-Author: Autonomous UAV Inspection Team (Person 1 & Person 2)
+Author: Person 1 (AI / VLM Lead)
 Description:
-    Exposes a unified interface returning bounding boxes, defect labels, and confidence
-    scores C in [0, 1]. Accepts a launch argument/parameter `detector_backend` to dynamically
-    switch between:
-      - 'raw_vlm': Zero-shot Vision-Language Model with direct defect prompt.
-      - 'rag_vlm': Zero-shot VLM grounded with RAG CLIP Knowledge Base context.
-      - 'yolo': Supervised fine-tuned YOLOv11 detector.
+    ROS2 Node wrapping the verified inspection detector backends (`raw_vlm`, `rag_vlm`, `yolo`).
+    Subscribes strictly to `/inspection/captured_frame` (decoupled per-waypoint frame capture),
+    enforces strict lazy loading (instantiating ONLY the selected backend), parses structured JSON
+    or spatial grounding outputs, and publishes `vision_msgs/msg/Detection2DArray` messages
+    to `/inspection/detections` preserving input ROS header timestamp and frame_id.
 """
 
 import rclpy
@@ -20,101 +19,233 @@ from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithP
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import numpy as np
-import torch
 import os
-import yaml
+import json
+import re
+from PIL import Image as PILImage
 from abc import ABC, abstractmethod
+from typing import List, Dict, Any
 
 # Import RAG Knowledge Base helper module
-from uas_earthen_inspection.rag_knowledge_base import RAGKnowledgeBase
-
-
-def resolve_project_path(value: str) -> str:
-    """Resolve repository-relative model and knowledge-base paths."""
-    if os.path.isabs(value):
-        return value
-    root = os.environ.get('UAS_INSPECTION_ROOT', os.getcwd())
-    return os.path.join(root, value)
+from uas_earthen_inspection.rag_knowledge_base import RAGKnowledgeBase, resolve_project_path
 
 
 class BaseDetector(ABC):
     """Abstract Base Interface for Defect Detectors."""
 
     @abstractmethod
-    def detect(self, cv_image: np.ndarray):
+    def detect(self, cv_image: np.ndarray) -> List[Dict[str, Any]]:
         """
         Runs detection on an OpenCV RGB image.
         Returns:
             list of dicts: [{
                 'bbox': [xmin, ymin, xmax, ymax],
-                'class_name': str,
+                'class_id': str,
                 'confidence': float  # 0.0 to 1.0
             }]
         """
         pass
 
 
-class RawVLMDetector(BaseDetector):
-    """Backend 1: Raw Zero-Shot Vision-Language Model Detector."""
+class Qwen25VLDetector(BaseDetector):
+    """
+    Qwen2.5-VL 4-Bit Quantized Vision-Language Model Detector with Lazy Loading & Structured JSON Output Parsing.
+    """
 
-    def __init__(self, prompts_yaml_path: str):
-        print(f"[RawVLMDetector] Initialized with prompts from {prompts_yaml_path}")
-        # In full implementation: Load LLaVA / Qwen-VL / Open-VLM model & processor
+    MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
 
-    def detect(self, cv_image: np.ndarray):
-        # Stub implementation simulating VLM raw zero-shot detection
+    def __init__(self, mode: str = "rag_vlm", rag_kb: RAGKnowledgeBase = None):
+        self.mode = mode  # 'raw_vlm' or 'rag_vlm'
+        self.rag_kb = rag_kb
+        self.device = "cuda" if (os.environ.get('FORCE_CPU') != '1' and torch_cuda_is_available()) else "cpu"
+
+        print(f"[Qwen25VLDetector] Initializing {self.MODEL_ID} in mode: [{self.mode.upper()}] on {self.device}")
+
+        self.model = None
+        self.processor = None
+        self._load_quantized_model()
+
+    def _load_quantized_model(self):
+        """Loads Qwen2.5-VL-3B-Instruct with 4-bit BitsAndBytes quantization & accelerate auto-mapping."""
+        try:
+            import torch
+            from transformers import BitsAndBytesConfig, AutoProcessor
+
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True
+            )
+
+            try:
+                from transformers import Qwen2_5_VLForConditionalGeneration
+                model_cls = Qwen2_5_VLForConditionalGeneration
+            except ImportError:
+                from transformers import AutoModelForCausalLM
+                model_cls = AutoModelForCausalLM
+
+            print(f"[Qwen25VLDetector] Loading 4-bit model weights...")
+            self.model = model_cls.from_pretrained(
+                self.MODEL_ID,
+                quantization_config=quantization_config,
+                device_map="auto",
+                torch_dtype=torch.float16,
+                trust_remote_code=True
+            )
+
+            self.processor = AutoProcessor.from_pretrained(
+                self.MODEL_ID,
+                trust_remote_code=True
+            )
+            print(f"[Qwen25VLDetector] Successfully loaded 4-bit quantized {self.MODEL_ID}.")
+
+        except Exception as e:
+            print(f"[ERROR] [Qwen25VLDetector] Failed to load 4-bit model ({e}). VLM inference unavailable.")
+            self.model = None
+            self.processor = None
+
+    def construct_prompt(self, cv_image: np.ndarray) -> str:
+        """Constructs prompt requesting structured JSON output format."""
+        if self.mode == "rag_vlm" and self.rag_kb is not None:
+            top_k_defects = self.rag_kb.retrieve_context(cv_image, top_k=1)
+            if top_k_defects:
+                top_d = top_k_defects[0]
+                retrieved_context = f"{top_d['name']}: {top_d['description']}"
+            else:
+                retrieved_context = "Structural Crack: Linear structural crack fracture on earthen wall."
+
+            prompt = (
+                f"Context from Earthen Architecture Knowledge Base: {retrieved_context}.\n\n"
+                f"Analyze the image using this context. Output strictly as a JSON object in this format:\n"
+                f'{{"detections": [{{"class_id": "<class_name>", "bbox_xyxy": [xmin, ymin, xmax, ymax], "confidence": <float_score>}}]}}'
+            )
+        else:
+            prompt = (
+                f"Inspect this earthen heritage wall for defects (structural_crack, surface_erosion, moisture_stain).\n"
+                f"Output strictly as a JSON object in this format:\n"
+                f'{{"detections": [{{"class_id": "<class_name>", "bbox_xyxy": [xmin, ymin, xmax, ymax], "confidence": <float_score>}}]}}'
+            )
+        return prompt
+
+    def detect(self, cv_image: np.ndarray) -> List[Dict[str, Any]]:
         h, w, _ = cv_image.shape
-        # Mocking detection result for structural crack
-        return [{
-            'bbox': [int(w * 0.2), int(h * 0.3), int(w * 0.6), int(h * 0.7)],
-            'class_name': 'structural_crack',
-            'confidence': 0.58  # Ambiguous score to trigger revisit loop test
-        }]
+        prompt = self.construct_prompt(cv_image)
 
+        if self.model is None or self.processor is None:
+            print("[ERROR] [Qwen25VLDetector] Model not initialized. Returning empty detection list.")
+            return []
 
-class RAGVLMDetector(BaseDetector):
-    """Backend 2: RAG-Grounded Zero-Shot Vision-Language Model Detector."""
+        try:
+            import torch
+            pil_img = PILImage.fromarray(cv_image[:, :, ::-1])  # BGR to RGB
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": pil_img},
+                        {"type": "text", "text": prompt}
+                    ]
+                }
+            ]
+            text_input = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.processor(text=[text_input], images=[pil_img], return_tensors="pt").to(self.device)
 
-    def __init__(self, ontology_path: str, embeddings_path: str, prompts_path: str):
-        print("[RAGVLMDetector] Initializing RAG Knowledge Base Grounding...")
-        self.rag_kb = RAGKnowledgeBase(ontology_path, embeddings_path)
+            with torch.no_grad():
+                generated_ids = self.model.generate(**inputs, max_new_tokens=256)
+                output_text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
-    def detect(self, cv_image: np.ndarray):
-        # 1. Retrieve top-k grounding context from Knowledge Base
-        kb_results = self.rag_kb.retrieve_context(cv_image, top_k=2)
-        retrieved_context = "\n".join([f"- {r['name']}: {r['description']}" for r in kb_results])
+            return self.parse_vlm_response(output_text, w, h)
 
-        print(f"[RAGVLMDetector] Grounding context retrieved:\n{retrieved_context}")
+        except Exception as e:
+            print(f"[ERROR] [Qwen25VLDetector] Inference failed: {e}")
+            return []
 
-        # 2. Query VLM with Grounded Prompt
-        h, w, _ = cv_image.shape
-        return [{
-            'bbox': [int(w * 0.25), int(h * 0.35), int(w * 0.55), int(h * 0.65)],
-            'class_name': kb_results[0]['id'] if kb_results else 'structural_crack',
-            'confidence': 0.85  # Higher confidence due to RAG grounding
-        }]
+    def parse_vlm_response(self, text: str, img_w: int, img_h: int) -> List[Dict[str, Any]]:
+        """
+        Parses model response into unified detection structure:
+        {"bbox": [xmin, ymin, xmax, ymax], "class_id": str, "confidence": float}
+        Supports structured JSON first, with spatial regex as fallback.
+        Returns [] if parsing fails.
+        """
+        # 1. Try JSON parsing
+        try:
+            json_match = re.search(r"\{.*\"detections\".*\}", text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group(0))
+                raw_dets = data.get("detections", [])
+                parsed_list = []
+                for d in raw_dets:
+                    bbox = d.get("bbox_xyxy", d.get("bbox", [0, 0, img_w, img_h]))
+                    cls_id = str(d.get("class_id", "defect")).strip("{}")
+                    conf = float(d.get("confidence", 0.85))
+                    parsed_list.append({
+                        "bbox": [int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])],
+                        "class_id": cls_id,
+                        "confidence": min(1.0, max(0.0, conf))
+                    })
+                if parsed_list:
+                    return parsed_list
+        except Exception:
+            pass
+
+        # 2. Fallback spatial regex parsing: [ymin, xmin, ymax, xmax] {class_name} Confidence: {score}
+        box_pattern = r"(?:<box>)?\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\](?:\s*</box>)?\s*(?:\{([^}]+)\}|([^{\n]+))\s*(?:Confidence:?\s*([\d.]+))?"
+        matches = re.findall(box_pattern, text, re.DOTALL | re.IGNORECASE)
+
+        if matches:
+            parsed_list = []
+            for match in matches:
+                ymin_raw, xmin_raw, ymax_raw, xmax_raw, label_braced, label_unbraced, conf_raw = match
+                ymin = max(0, min(img_h, int(ymin_raw)))
+                xmin = max(0, min(img_w, int(xmin_raw)))
+                ymax = max(0, min(img_h, int(ymax_raw)))
+                xmax = max(0, min(img_w, int(xmax_raw)))
+                conf = float(conf_raw) if conf_raw else 0.85
+
+                raw_label = label_braced if label_braced else label_unbraced
+                clean_label = raw_label.strip()
+
+                parsed_list.append({
+                    "bbox": [xmin, ymin, xmax, ymax],
+                    "class_id": clean_label,
+                    "confidence": min(1.0, max(0.0, conf))
+                })
+            return parsed_list
+
+        print(f"[ERROR] [Qwen25VLDetector] Failed to parse VLM response: '{text.strip()}'")
+        return []
 
 
 class YOLOv11Detector(BaseDetector):
-    """Backend 3: Supervised YOLOv11 Detector."""
+    """
+    Supervised YOLOv11 Detector Backend.
+    Lazy loaded: Does NOT import or load Transformers, CLIP, or Qwen models into VRAM.
+    """
 
     def __init__(self, weights_path: str):
-        print(f"[YOLOv11Detector] Loading YOLOv11 weights from {weights_path}")
-        self.weights_path = weights_path
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        resolved_weights = resolve_project_path(weights_path)
+        self.weights_path = resolved_weights
+        self.model = None
+        print(f"[YOLOv11Detector] Initializing YOLOv11 backend from: '{resolved_weights}'")
 
-        if os.path.exists(weights_path):
+        if os.path.exists(resolved_weights):
             try:
                 from ultralytics import YOLO
-                self.model = YOLO(weights_path)
+                self.model = YOLO(resolved_weights)
+                print(f"[YOLOv11Detector] Successfully loaded YOLOv11 model weights.")
             except Exception as e:
-                print(f"[YOLOv11Detector] Failed to load PyTorch weights: {e}. Fallback to mock.")
-                self.model = None
+                print(f"[ERROR] [YOLOv11Detector] Failed to load YOLO weights ({e}).")
         else:
-            self.model = None
+            print(f"[ERROR] [YOLOv11Detector] Weights file not found: '{resolved_weights}'.")
 
-    def detect(self, cv_image: np.ndarray):
-        if self.model is not None:
+    def detect(self, cv_image: np.ndarray) -> List[Dict[str, Any]]:
+        h, w, _ = cv_image.shape
+        if self.model is None:
+            print("[ERROR] [YOLOv11Detector] Model not initialized. Returning empty detection list.")
+            return []
+
+        try:
             results = self.model(cv_image)[0]
             detections = []
             for box in results.boxes:
@@ -123,36 +254,41 @@ class YOLOv11Detector(BaseDetector):
                 cls_id = int(box.cls[0].cpu().numpy())
                 cls_name = self.model.names[cls_id]
                 detections.append({
-                    'bbox': xyxy,
-                    'class_name': cls_name,
-                    'confidence': conf
+                    "bbox": [int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])],
+                    "class_id": cls_name,
+                    "confidence": conf
                 })
             return detections
-        else:
-            # Mock YOLO output if model weights not present
-            h, w, _ = cv_image.shape
-            return [{
-                'bbox': [int(w * 0.1), int(h * 0.2), int(w * 0.4), int(h * 0.5)],
-                'class_name': 'surface_erosion',
-                'confidence': 0.92
-            }]
+        except Exception as e:
+            print(f"[ERROR] [YOLOv11Detector] Inference failed: {e}")
+            return []
+
+
+def torch_cuda_is_available() -> bool:
+    """Safely check if CUDA is available without throwing exception if PyTorch is uninstalled."""
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
 
 
 class DetectionNode(Node):
     """
-    ROS2 Node for AI Defect Detection across Raw VLM, RAG VLM, and YOLO backends.
+    ROS2 Node for AI Defect Detection wrapping RAG-VLM / Raw-VLM / YOLO backends.
+    Subscribes strictly to `/inspection/captured_frame` (decoupled per-waypoint frame capture)
+    and publishes `vision_msgs/msg/Detection2DArray` to `/inspection/detections`.
     """
 
     def __init__(self):
         super().__init__('detection_node')
 
         # Declare parameters
-        self.declare_parameter('detector_backend', 'rag_vlm')
+        self.declare_parameter('detector_backend', 'rag_vlm')  # 'raw_vlm' | 'rag_vlm' | 'yolo'
         self.declare_parameter('captured_frame_topic', '/inspection/captured_frame')
         self.declare_parameter('detections_topic', '/inspection/detections')
         self.declare_parameter('ontology_json_path', 'knowledge_base/defect_ontology.json')
         self.declare_parameter('clip_embeddings_path', 'models/embeddings/clip_kb_embeddings.pt')
-        self.declare_parameter('prompts_yaml_path', 'knowledge_base/prompts.yaml')
         self.declare_parameter('yolo_weights_path', 'models/yolo/yolo_earthen_v11.pt')
 
         # Retrieve parameter values
@@ -161,17 +297,18 @@ class DetectionNode(Node):
         self.detections_topic = self.get_parameter('detections_topic').value
 
         self.bridge = CvBridge()
+        self.detector = None
 
-        # Instantiate selected backend
-        self.get_logger().info(f"Initializing AI Detector with backend: [{self.backend_type.upper()}]")
+        self.get_logger().info(f"[DetectionNode] Initializing active backend ONLY: [{self.backend_type.upper()}]")
+
+        # Strict Backend Separation & Lazy Loading
         if self.backend_type == 'raw_vlm':
-            prompts_path = resolve_project_path(self.get_parameter('prompts_yaml_path').value)
-            self.detector = RawVLMDetector(prompts_path)
+            self.detector = Qwen25VLDetector(mode='raw_vlm', rag_kb=None)
         elif self.backend_type == 'rag_vlm':
             ontology_path = resolve_project_path(self.get_parameter('ontology_json_path').value)
             embeddings_path = resolve_project_path(self.get_parameter('clip_embeddings_path').value)
-            prompts_path = resolve_project_path(self.get_parameter('prompts_yaml_path').value)
-            self.detector = RAGVLMDetector(ontology_path, embeddings_path, prompts_path)
+            rag_kb = RAGKnowledgeBase(ontology_path, embeddings_path)
+            self.detector = Qwen25VLDetector(mode='rag_vlm', rag_kb=rag_kb)
         elif self.backend_type == 'yolo':
             weights_path = resolve_project_path(self.get_parameter('yolo_weights_path').value)
             self.detector = YOLOv11Detector(weights_path)
@@ -186,47 +323,47 @@ class DetectionNode(Node):
             Detection2DArray, self.detections_topic, 10
         )
 
-        self.get_logger().info(f"DetectionNode ready. Listening on {self.frame_topic}")
+        self.get_logger().info(f"[DetectionNode] Subscribed to captured frame topic: '{self.frame_topic}'")
+        self.get_logger().info(f"[DetectionNode] Publishing detections to: '{self.detections_topic}'")
 
     def frame_callback(self, msg: Image):
-        """Processes captured frame through configured backend and publishes detections."""
+        """
+        Callback processing captured camera frame into vision_msgs/msg/Detection2DArray.
+        Preserves original ROS header timestamp and frame_id.
+        """
         try:
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except CvBridgeError as e:
-            self.get_logger().error(f"CV Bridge Error: {e}")
+            self.get_logger().error(f"CV Bridge Conversion Error: {e}")
             return
 
-        # Execute detection inference
         raw_detections = self.detector.detect(cv_img)
-        self.get_logger().info(
-            f"[{self.backend_type.upper()}] Detected {len(raw_detections)} defect(s)."
-        )
+        self.get_logger().info(f"[{self.backend_type.upper()}] Detected {len(raw_detections)} defect(s) in captured frame.")
 
-        # Convert to ROS2 vision_msgs/Detection2DArray
         detection_array_msg = Detection2DArray()
+        # Preserve original ROS header timestamp and frame_id from captured_frame
         detection_array_msg.header = msg.header
 
         for det in raw_detections:
             d2d = Detection2D()
             d2d.header = msg.header
 
-            # Bounding box center and size
             xmin, ymin, xmax, ymax = det['bbox']
             d2d.bbox.center.position.x = float((xmin + xmax) / 2.0)
             d2d.bbox.center.position.y = float((ymin + ymax) / 2.0)
             d2d.bbox.size_x = float(abs(xmax - xmin))
             d2d.bbox.size_y = float(abs(ymax - ymin))
 
-            # Hypothesis classification & confidence
             hyp = ObjectHypothesisWithPose()
-            hyp.hypothesis.class_id = det['class_name']
+            cls_id = det.get('class_id', det.get('class_name', 'defect'))
+            hyp.hypothesis.class_id = str(cls_id)
             hyp.hypothesis.score = float(det['confidence'])
             d2d.results.append(hyp)
 
             detection_array_msg.detections.append(d2d)
 
             self.get_logger().info(
-                f"  -> Defect: {det['class_name']} | Conf C: {det['confidence']:.2f} | BBox: {det['bbox']}"
+                f"  -> Defect Class: '{cls_id}' | Conf C: {det['confidence']:.2f} | BBox Center: ({d2d.bbox.center.position.x:.1f}, {d2d.bbox.center.position.y:.1f}), Size: ({d2d.bbox.size_x:.1f}x{d2d.bbox.size_y:.1f})"
             )
 
         self.pub_detections.publish(detection_array_msg)
