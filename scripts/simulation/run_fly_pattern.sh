@@ -39,7 +39,9 @@ python3 /home/uas/scripts/simulation/fly_pattern.py
 echo "[fly] Flight pattern complete. Exporting telemetry CSV and camera MP4 video..."
 BAG_SELECTOR=latest
 if [[ -s /home/uas/rosbags/.active_bag ]]; then
-  read -r BAG_SELECTOR < /home/uas/rosbags/.active_bag
+  # `read` exits nonzero on a final line without a trailing newline; never let
+  # that kill the post-flight export under set -e (fall back to 'latest')
+  read -r BAG_SELECTOR < /home/uas/rosbags/.active_bag || BAG_SELECTOR=latest
 fi
 python3 /home/uas/scripts/analysis/analyze_rosbags.py \
   --bag "$BAG_SELECTOR" \

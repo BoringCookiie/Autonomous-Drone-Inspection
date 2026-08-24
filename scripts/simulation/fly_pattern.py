@@ -66,6 +66,7 @@ _DEFAULT_MAVROS_NS = '/uas1'
 
 
 _DEFAULT_SENSOR_TOPICS = [
+    '/clock',
     # MAVROS state / estimator outputs
     '{base}/state',
     '{base}/extended_state',
@@ -136,6 +137,7 @@ class RosbagRecorder:
         require_depth = os.environ.get('FLY_PATTERN_REQUIRE_DEPTH', '').lower() in ('1', 'true', 'yes')
         if record_depth or require_depth:
             topics.append('/camera/depth/image_raw')
+            topics.append('/points')
         return topics
 
     def start(self) -> None:
@@ -214,7 +216,10 @@ class RosbagRecorder:
         if self.output_dir is not None:
             self._node.get_logger().info(f'Sensor rosbag saved: {self.output_dir}')
             if self._bag_marker is not None:
-                self._bag_marker.write_text(str(self.output_dir), encoding='utf-8')
+                # Trailing newline is required: shell consumers use `read`, which
+                # returns a nonzero (EOF) exit code on a final line without one,
+                # killing `set -e` scripts before post-flight analysis runs
+                self._bag_marker.write_text(str(self.output_dir) + '\n', encoding='utf-8')
         if self._log_file is not None:
             self._log_file.close()
             self._log_file = None

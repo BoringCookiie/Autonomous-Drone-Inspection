@@ -113,6 +113,9 @@ class VideoSink:
         out_dir.mkdir(parents=True, exist_ok=True)
         safe = topic.strip('/').replace('/', '_') or 'camera'
         self.path = out_dir / f'{safe}.mp4'
+        self._partial_path = out_dir / f'{safe}.part.mp4'
+        self.path.unlink(missing_ok=True)
+        self._partial_path.unlink(missing_ok=True)
         self.target_fps = fps
         self.writer: cv2.VideoWriter | None = None
         self.frames = 0
@@ -127,7 +130,9 @@ class VideoSink:
             return
         height, width = frame.shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        self.writer = cv2.VideoWriter(str(self.path), fourcc, self.target_fps, (width, height), True)
+        self.writer = cv2.VideoWriter(
+            str(self._partial_path), fourcc, self.target_fps, (width, height), True
+        )
         if not self.writer.isOpened():
             self.writer.release()
             self.writer = None
@@ -168,6 +173,11 @@ class VideoSink:
     def close(self) -> None:
         if self.writer is not None:
             self.writer.release()
+            self.writer = None
+            if self.frames > 0 and self._partial_path.exists():
+                # Publish the final name only after VideoWriter has flushed its
+                # container trailer; interrupted exports remain visibly .part.
+                self._partial_path.replace(self.path)
 
 
 
@@ -422,6 +432,21 @@ class BagAnalyzer:
         if sink is None or sink.frames < 2:
             raise SystemExit(
                 f'Camera validation failed: no decodable frames on {self.video_topic}'
+            )
+        capture = cv2.VideoCapture(str(sink.path))
+        readable = 0
+        try:
+            while True:
+                ok, _ = capture.read()
+                if not ok:
+                    break
+                readable += 1
+        finally:
+            capture.release()
+        if readable != sink.frames:
+            raise SystemExit(
+                f'Camera validation failed: MP4 contains {readable} readable frames, '
+                f'but exporter wrote {sink.frames}'
             )
         if self.local_position.count > 10 and self.local_position.distance_3d > 1.0:
             if sink.changed_frames == 0:
