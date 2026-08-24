@@ -29,6 +29,7 @@ RUN curl https://packages.osrfoundation.org/gazebo.gpg --output /usr/share/keyri
 
 # 2. Installation des dépendances Gazebo, Navigation et Mapping
 RUN apt-get update && apt-get install -y \
+    ffmpeg \
     libgz-sim8-dev \
     gz-harmonic \
     python3-gz-msgs10 \

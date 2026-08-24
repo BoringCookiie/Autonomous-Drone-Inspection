@@ -11,9 +11,6 @@ PX4_GZ_WORLD="${PX4_GZ_WORLD:-earthen_heritage_wall}"
 PX4_GZ_MODEL_TARGET="${PX4_GZ_MODEL_TARGET:-gz_x500_mono_cam}"
 HEADLESS="${HEADLESS:-1}"
 
-# Clean any stale px4 and gazebo processes and socket files inside container before launching
-docker exec "$CONTAINER" bash -c "pkill -9 -f 'px4|gz|ruby|parameter_bridge|ninja|cmake' || true; rm -rf /tmp/gz* /tmp/ign* /tmp/px4*" || true
-
 docker exec -i \
   -e PX4_GZ_WORLD="$PX4_GZ_WORLD" \
   -e PX4_GZ_MODEL_TARGET="$PX4_GZ_MODEL_TARGET" \

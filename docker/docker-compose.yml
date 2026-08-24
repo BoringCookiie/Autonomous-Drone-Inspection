@@ -31,6 +31,9 @@ services:
     image: uas/sim_stack:latest
     container_name: uas_sim
     profiles: [sim]
+    init: true
+    stop_signal: SIGINT
+    stop_grace_period: 30s
 
     # host networking = ROS2 DDS works across containers
     # and with the host machine without any config
@@ -69,6 +72,7 @@ services:
       - ./rosbags:/home/uas/rosbags
       - ./scripts:/home/uas/scripts:ro
       - ./docker:/home/uas/docker:ro
+      - ./docker/fastdds_udp.xml:/home/uas/fastdds_udp.xml:ro
       - .:/home/uas/inspection:ro
       - /dev/dri:/dev/dri
 
@@ -147,6 +151,9 @@ services:
     image: uas/sim_stack:latest
     container_name: uas_sim_headless
     profiles: [sim-headless]
+    init: true
+    stop_signal: SIGINT
+    stop_grace_period: 30s
 
     network_mode: host
     ipc: host
@@ -169,6 +176,7 @@ services:
       - ./rosbags:/home/uas/rosbags
       - ./scripts:/home/uas/scripts:ro
       - ./docker:/home/uas/docker:ro
+      - ./docker/fastdds_udp.xml:/home/uas/fastdds_udp.xml:ro
       - .:/home/uas/inspection:ro
 
     stdin_open: true
@@ -183,6 +191,9 @@ services:
     image: uas/sim_stack:latest
     container_name: uas_sim_wayland
     profiles: [sim-wayland]
+    init: true
+    stop_signal: SIGINT
+    stop_grace_period: 30s
 
     network_mode: host
     ipc: host
@@ -209,6 +220,7 @@ services:
       - ./rosbags:/home/uas/rosbags
       - ./scripts:/home/uas/scripts:ro
       - ./docker:/home/uas/docker:ro
+      - ./docker/fastdds_udp.xml:/home/uas/fastdds_udp.xml:ro
       - .:/home/uas/inspection:ro
       - ${XDG_RUNTIME_DIR:-/run/user/1000}:${XDG_RUNTIME_DIR:-/run/user/1000}:rw
       - /dev/dri:/dev/dri
@@ -227,6 +239,9 @@ services:
     image: uas/sim_stack:latest
     container_name: uas_sim_novnc
     profiles: [sim-novnc]
+    init: true
+    stop_signal: SIGINT
+    stop_grace_period: 30s
 
     ports:
       - "6080:6080"   # noVNC (web)
@@ -260,6 +275,7 @@ services:
       - ./rosbags:/home/uas/rosbags
       - ./scripts:/home/uas/scripts:ro
       - ./docker:/home/uas/docker:ro
+      - ./docker/fastdds_udp.xml:/home/uas/fastdds_udp.xml:ro
       - .:/home/uas/inspection:ro
       - /dev/dri:/dev/dri
 

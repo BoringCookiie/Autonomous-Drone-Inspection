@@ -40,14 +40,16 @@ if ! command -v tmux >/dev/null 2>&1; then
   exit 1
 fi
 
-# Clean any leftover processes inside the container before launching new stack
-docker exec "$CONTAINER" bash -c "pkill -9 -f 'mavros|px4|gz|parameter_bridge|gz_camera_bridge|fly_pattern' || true; rm -rf /tmp/gz* /tmp/ign* /tmp/px4*" 2>/dev/null || true
-
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "Session '$SESSION' already exists. Attach: tmux attach -t $SESSION"
   echo "Or replace: tmux kill-session -t $SESSION && $0"
   exit 1
 fi
+
+# Clean orphaned runtime processes only after confirming there is no active
+# tmux session. This avoids killing a live mission during a second invocation.
+docker exec "$CONTAINER" bash /home/uas/scripts/simulation/cleanup_runtime.sh
+docker exec "$CONTAINER" bash -c 'rm -rf /tmp/gz* /tmp/ign* /tmp/px4*'
 
 # Window 0: SITL + Gazebo (must be first)
 tmux new-session -d -s "$SESSION" -n px4_gz "cd \"$ROOT\" && PX4_GZ_MODEL_TARGET=\"$PX4_GZ_MODEL_TARGET\" PX4_GZ_WORLD=\"$PX4_GZ_WORLD\" HEADLESS=$HEADLESS ./scripts/simulation/run_obstacle_flight.sh"
@@ -60,7 +62,7 @@ tmux new-window -t "$SESSION" -n camera_bridge "docker exec -i \"$CONTAINER\" ba
 
 # Window 3: flight script (after waits)
 if [[ "$NO_FLY" -eq 1 ]]; then
-  tmux new-window -t "$SESSION" -n recorder "docker exec -i \"$CONTAINER\" bash -c 'source /opt/ros/humble/setup.bash && mkdir -p /home/uas/rosbags && cd /home/uas/rosbags && ros2 bag record -a'"
+  tmux new-window -t "$SESSION" -n recorder "docker exec -i \"$CONTAINER\" bash /home/uas/scripts/simulation/run_curated_recorder.sh"
 else
   tmux new-window -t "$SESSION" -n fly "docker exec -i \"$CONTAINER\" env FLY_PATTERN_REQUIRE_DEPTH=\"$REQUIRE_DEPTH\" bash /home/uas/scripts/simulation/run_fly_pattern.sh"
 fi

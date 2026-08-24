@@ -96,6 +96,24 @@ select_topic() {
   return 1
 }
 
+select_clock_topic() {
+  local topics="$1"
+  if printf '%s\n' "$topics" | grep -Fxq '/clock'; then
+    printf '%s' '/clock'
+    return 0
+  fi
+
+  while IFS= read -r candidate; do
+    case "$candidate" in
+      /world/*/clock)
+        printf '%s' "$candidate"
+        return 0
+        ;;
+    esac
+  done <<< "$topics"
+  return 1
+}
+
 bridge_topic() {
   local gz_topic="$1"
   local ros_topic="$2"
@@ -111,12 +129,20 @@ bridge_topic() {
 
 echo "[camera_bridge] Starting discovered GZ-to-ROS bridge (${TYPE_PREFIX}.msgs)..."
 
+# Deduplication guard: a second bridge instance would triple sensor load and
+# publish /clock multiple times, corrupting sim-time consumers.
+if pgrep -f '/opt/ros_gz_harmonic/lib/ros_gz_bridge/parameter_bridge' > /dev/null 2>&1; then
+  echo "[camera_bridge] A parameter_bridge is already running; nothing to do."
+  exit 0
+fi
+
 while true; do
   gz_topics="$(wait_for_gz_topics)" || exit 1
   rgb_topic="$(select_topic rgb "$gz_topics" || true)"
   rgb_info_topic="${GZ_CAMERA_INFO_TOPIC:-}"
   depth_topic="$(select_topic depth "$gz_topics" || true)"
   points_topic="$(select_topic points "$gz_topics" || true)"
+  clock_topic="$(select_clock_topic "$gz_topics" || true)"
 
   if [[ -z "$rgb_topic" ]]; then
     echo "[camera_bridge] No RGB image topic found. Current Gazebo topics:" >&2
@@ -164,6 +190,13 @@ while true; do
     bridge_topic "$points_topic" "$POINTS_ROS_TOPIC" sensor_msgs/msg/PointCloud2 "${TYPE_PREFIX}.msgs.PointCloudPacked"
   else
     echo "[camera_bridge] No pointcloud topic found; /points will remain unpublished (mono-cam model)"
+  fi
+
+  if [[ -n "$clock_topic" ]]; then
+    # Gazebo is the single simulation clock authority. All ROS nodes use it.
+    bridge_topic "$clock_topic" "/clock" rosgraph_msgs/msg/Clock "${TYPE_PREFIX}.msgs.Clock"
+  else
+    echo "[camera_bridge] No Gazebo clock topic found; simulation time unavailable" >&2
   fi
 
   if ! ros2 run ros_gz_bridge parameter_bridge "${BRIDGE_ARGS[@]}" --ros-args "${BRIDGE_REMAPS[@]}"; then
