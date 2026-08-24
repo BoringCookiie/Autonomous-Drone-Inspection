@@ -14,7 +14,7 @@ def main():
     pub = node.create_publisher(PoseStamped, '/navigation/goal', 10)
     
     msg = PoseStamped()
-    msg.header.frame_id = "map"
+    msg.header.frame_id = "odom"
     msg.pose.position.x = float(sys.argv[1])
     msg.pose.position.y = float(sys.argv[2])
     msg.pose.position.z = float(sys.argv[3])

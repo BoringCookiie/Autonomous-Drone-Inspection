@@ -38,6 +38,11 @@ def generate_launch_description():
     # ------------------------------------------------------------------
     static_nodes = [
         Node(
+            executable='python3', arguments=[os.path.join(nav_dir, 'tf_bridge_node.py')],
+            name='tf_bridge', output='screen',
+            parameters=[{'use_sim_time': True, 'camera_frame': 'depth_camera'}]
+        ),
+        Node(
             executable='python3', arguments=[os.path.join(nav_dir, 'planner_3d.py')],
             name='planner_3d', output='screen',
             parameters=[{'use_sim_time': True}]
@@ -77,12 +82,31 @@ def generate_launch_description():
         if LaunchConfiguration('enable_coverage_planner').perform(context) == 'true':
             nodes.append(coverage_planner_node)
 
-        if LaunchConfiguration('enable_slam').perform(context) == 'true':
-            depth_available = LaunchConfiguration('has_depth').perform(context) == 'true'
+        depth_available = LaunchConfiguration('has_depth').perform(context) == 'true'
 
+        if depth_available:
+            # ---- Obstacle mapping (independent of SLAM) ----------------
+            # The sanitizer must run before octomap_server: the gz bridge
+            # marks clouds is_dense=true while many pixels are NaN, and
+            # octomap silently drops every such insertion.
+            nodes.append(Node(
+                executable='python3',
+                arguments=[os.path.join(nav_dir, 'depth_cloud_sanitizer.py')],
+                name='depth_cloud_sanitizer', output='screen',
+                parameters=[{'use_sim_time': True, 'output_frame_id': 'depth_camera'}]
+            ))
+            nodes.append(Node(
+                package='octomap_server',
+                executable='octomap_server_node',
+                name='octomap_server',
+                output='screen',
+                parameters=[{'use_sim_time': True, 'resolution': 0.2, 'frame_id': 'odom'}],
+                remappings=[('cloud_in', '/points_clean')]
+            ))
+
+        if LaunchConfiguration('enable_slam').perform(context) == 'true':
             if depth_available:
                 # ---- RGBD mode (gz_x500_depth) ----------------------------
-                # RTAB-Map subscribes to both RGB and depth streams.
                 rtabmap_params = [params_path]
                 rtabmap_remaps = [
                     ('rgb/image',       '/camera/color/image_raw'),
@@ -90,20 +114,8 @@ def generate_launch_description():
                     ('rgb/camera_info', '/camera/color/camera_info'),
                     ('odom',            '/uas1/local_position/odom'),
                 ]
-                # OctoMap is only useful when /points is bridged (depth model)
-                nodes.append(Node(
-                    package='octomap_server',
-                    executable='octomap_server_node',
-                    name='octomap_server',
-                    output='screen',
-                    parameters=[{'resolution': 0.2, 'frame_id': 'map'}],
-                    remappings=[('cloud_in', '/points')]
-                ))
             else:
                 # ---- RGB-only mode (gz_x500_mono_cam) ---------------------
-                # RTAB-Map in monocular/odometry-only mode — depth disabled.
-                # subscribe_depth=false: don't wait for /camera/depth/image_raw
-                # Mem/IncrementalMemory still builds a visual odometry map from RGB.
                 rtabmap_params = [
                     params_path,
                     {'subscribe_depth': False,
@@ -116,7 +128,6 @@ def generate_launch_description():
                     ('rgb/camera_info', '/camera/color/camera_info'),
                     ('odom',            '/uas1/local_position/odom'),
                 ]
-                # OctoMap skipped — no pointcloud without depth sensor
 
             nodes.append(Node(
                 package='rtabmap_slam', executable='rtabmap', name='rtabmap',

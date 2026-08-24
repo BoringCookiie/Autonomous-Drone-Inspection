@@ -152,7 +152,7 @@ class CoveragePlanner(Node):
         q = yaw_to_quaternion(YAW)
 
         path = Path()
-        path.header.frame_id = 'map'
+        path.header.frame_id = 'odom'
         path.header.stamp = self.get_clock().now().to_msg()
 
         for i in range(N_strips):
@@ -162,7 +162,7 @@ class CoveragePlanner(Node):
 
             for x in xs:
                 ps = PoseStamped()
-                ps.header.frame_id = 'map'
+                ps.header.frame_id = 'odom'
                 ps.header.stamp = path.header.stamp
                 ps.pose.position.x = float(x)
                 ps.pose.position.y = float(drone_y)

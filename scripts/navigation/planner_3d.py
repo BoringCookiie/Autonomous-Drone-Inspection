@@ -162,7 +162,9 @@ class Planner3D(Node):
 
         if goal in came_from:
             path = Path()
-            path.header.frame_id = "map"
+            # 'odom': this stack's world frame (tf_bridge chain); avoids
+            # depending on rtabmap's wall-clock-stamped map->odom transform
+            path.header.frame_id = "odom"
             path.header.stamp = self.get_clock().now().to_msg()
             curr = goal
             while curr:

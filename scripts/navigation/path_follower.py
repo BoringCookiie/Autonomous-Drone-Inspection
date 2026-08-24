@@ -53,6 +53,10 @@ class PathFollower(Node):
         self.low_battery = False
         self.taking_off = True
         self._last_req_time = 0.0
+        # Hover hold point: latched once when entering hover, NOT continuously
+        # re-sampled. Streaming the live estimate back as a setpoint lets EKF
+        # drift drag the vehicle across the world (observed 1.3 km runaway).
+        self._hover_anchor: PoseStamped | None = None
 
         # Position tolerance (m) to declare a waypoint reached
         self.declare_parameter('position_tolerance_m', 0.6)
@@ -138,6 +142,7 @@ class PathFollower(Node):
         if not msg.poses:
             return
         self._primary_done = False
+        self._hover_anchor = None
         self.path = list(msg.poses)
         self.get_logger().info(
             f'[PathFollower] Coverage path received: {len(self.path)} waypoints.'
@@ -162,6 +167,7 @@ class PathFollower(Node):
             )
         else:
             # No active coverage path — execute now
+            self._hover_anchor = None
             self.path = list(msg.poses)
             self.get_logger().info(
                 f'[PathFollower] Planned path received: {len(self.path)} waypoints.'
@@ -326,12 +332,19 @@ class PathFollower(Node):
                     if remaining == 0:
                         self._on_path_complete()
         elif self.pose:
-            # Hover in place
-            sp.pose = self.pose.pose
-            sp.pose.position.z = max(self.pose.pose.position.z, 1.5)
-            self.get_logger().info(
-                'No active path — hovering.', throttle_duration_sec=5.0
-            )
+            # Hover at the latched anchor (see __init__ note on feedback loops)
+            if self._hover_anchor is None:
+                self._hover_anchor = PoseStamped()
+                self._hover_anchor.header.frame_id = 'odom'
+                self._hover_anchor.pose = self.pose.pose
+                self._hover_anchor.pose.position.z = max(
+                    self.pose.pose.position.z, 1.5)
+                self.get_logger().info(
+                    'Hover anchor latched at (%.2f, %.2f, %.2f).'
+                    % (self._hover_anchor.pose.position.x,
+                       self._hover_anchor.pose.position.y,
+                       self._hover_anchor.pose.position.z))
+            sp.pose = self._hover_anchor.pose
         else:
             return  # No pose yet; skip publish
 
@@ -341,6 +354,7 @@ class PathFollower(Node):
 
     def _on_path_complete(self):
         """Called each time the current path list empties."""
+        self._hover_anchor = None  # next hover re-latches at the arrival point
         if not self._primary_done:
             # Primary coverage pass just finished
             self._primary_done = True

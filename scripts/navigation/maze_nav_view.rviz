@@ -1,0 +1,63 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Grid
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+      Marker Scale: 1
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: OctoMapVoxels
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /octomap_point_cloud_centers
+      Size (m): 0.15
+      Style: Boxes
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: PlannedPath
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /planned_path
+      Line Width: 0.08
+      Value: true
+    - Class: rviz_default_plugins/Pose
+      Enabled: true
+      Name: DronePose
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /uas1/local_position/pose
+      Value: true
+    - Class: rviz_default_plugins/Odometry
+      Enabled: true
+      Name: DroneOdometry
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /uas1/local_position/odom
+      Value: true
+  Fixed Frame: odom
+  Name: root
+Window Geometry:
+  Height: 900
+  Width: 1400
