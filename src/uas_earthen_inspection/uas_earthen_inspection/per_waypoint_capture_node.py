@@ -34,6 +34,7 @@ class PerWaypointCaptureNode(Node):
         self.declare_parameter('camera_depth_topic', '/camera/depth/image_raw')
         self.declare_parameter('waypoint_reached_topic', '/uav/waypoint_reached')
         self.declare_parameter('captured_frame_topic', '/inspection/captured_frame')
+        self.declare_parameter('captured_depth_topic', '/inspection/captured_depth')
         self.declare_parameter('save_captured_frames', True)
         self.declare_parameter('output_dir', 'results/raw_logs/captured_frames')
 
@@ -42,6 +43,7 @@ class PerWaypointCaptureNode(Node):
         self.depth_topic = self.get_parameter('camera_depth_topic').value
         self.trigger_topic = self.get_parameter('waypoint_reached_topic').value
         self.out_frame_topic = self.get_parameter('captured_frame_topic').value
+        self.out_depth_topic = self.get_parameter('captured_depth_topic').value
         self.save_frames = self.get_parameter('save_captured_frames').value
         self.output_dir = resolve_project_path(self.get_parameter('output_dir').value)
 
@@ -52,8 +54,16 @@ class PerWaypointCaptureNode(Node):
         self.capture_pending = False
         self.current_waypoint_id = 0
 
-        if self.save_frames and not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir, exist_ok=True)
+        if self.save_frames:
+            try:
+                os.makedirs(self.output_dir, exist_ok=True)
+            except OSError as e:
+                # Read-only mounts must degrade to publish-only mode, not crash the node
+                self.get_logger().error(
+                    f"Cannot create output dir '{self.output_dir}' ({e}). "
+                    "Disabling frame saving; captured frames are still published."
+                )
+                self.save_frames = False
 
         # Subscribers
         self.sub_rgb = self.create_subscription(
@@ -68,12 +78,17 @@ class PerWaypointCaptureNode(Node):
 
         # Publisher for decoupled captured RGB frame
         self.pub_captured_frame = self.create_publisher(Image, self.out_frame_topic, 10)
+        # Capture-time depth, paired with the RGB frame so downstream unprojection
+        # uses geometry from the waypoint moment, not the live (later) stream
+        self.pub_captured_depth = self.create_publisher(Image, self.out_depth_topic, 10)
 
         self.get_logger().info(
             f"PerWaypointCaptureNode initialized.\n"
             f"  Subscribed RGB: {self.rgb_topic}\n"
+            f"  Subscribed Depth: {self.depth_topic}\n"
             f"  Subscribed Trigger: {self.trigger_topic}\n"
-            f"  Publishing Captured Frame: {self.out_frame_topic}"
+            f"  Publishing Captured Frame: {self.out_frame_topic}\n"
+            f"  Publishing Captured Depth: {self.out_depth_topic}"
         )
 
     def rgb_callback(self, msg: Image):
@@ -101,6 +116,15 @@ class PerWaypointCaptureNode(Node):
         # Publish frame to AI detection node
         self.pub_captured_frame.publish(self.latest_rgb_msg)
 
+        # Publish the depth frame frozen at this same waypoint so revisit
+        # unprojection matches the captured RGB geometry
+        if self.latest_depth_msg is not None:
+            self.pub_captured_depth.publish(self.latest_depth_msg)
+        else:
+            self.get_logger().warn(
+                "No depth frame cached; /inspection/captured_depth not published for this waypoint."
+            )
+
         # Optionally save frame to disk
         if self.save_frames:
             try:
@@ -108,8 +132,10 @@ class PerWaypointCaptureNode(Node):
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 filename = f"waypoint_{self.current_waypoint_id:03d}_{timestamp_str}.png"
                 filepath = os.path.join(self.output_dir, filename)
-                cv2.imwrite(filepath, cv_img)
-                self.get_logger().info(f"Saved captured waypoint frame to {filepath}")
+                if not cv2.imwrite(filepath, cv_img):
+                    self.get_logger().error(f"cv2.imwrite failed for {filepath}")
+                else:
+                    self.get_logger().info(f"Saved captured waypoint frame to {filepath}")
             except CvBridgeError as e:
                 self.get_logger().error(f"CvBridge Conversion Failure: {str(e)}")
 

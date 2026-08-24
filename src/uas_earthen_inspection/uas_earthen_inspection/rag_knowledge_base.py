@@ -47,6 +47,12 @@ class RAGKnowledgeBase:
         self.clip_model_name = clip_model_name
         self.device = device or ('cuda' if (torch is not None and torch.cuda.is_available()) else 'cpu')
 
+        # Degraded-mode tracking: retrieval must never fabricate plausible-looking
+        # similarity scores when the embedding index or CLIP encoder is missing
+        self.embeddings_available = False
+        self.encoder_mock = False
+        self._degraded_warned = False
+
         # 1. Load defect ontology taxonomy metadata JSON
         self.defect_classes = self.load_knowledge_base(self.ontology_path)
 
@@ -95,15 +101,21 @@ class RAGKnowledgeBase:
             try:
                 embeddings = torch.load(resolved, map_location=self.device, weights_only=True)
                 print(f"[RAGKnowledgeBase] Successfully loaded pre-computed offline KB embeddings from: {resolved}")
+                self.embeddings_available = True
                 return embeddings
             except Exception:
                 try:
                     embeddings = torch.load(resolved, map_location=self.device)
+                    self.embeddings_available = True
                     return embeddings
                 except Exception as e:
                     print(f"[RAGKnowledgeBase] Error loading embeddings cache ({e}).")
         else:
-            print(f"[RAGKnowledgeBase] Notice: Offline embeddings file '{resolved}' not found.")
+            print(
+                f"[RAGKnowledgeBase] [DEGRADED] Offline embeddings file '{resolved}' not found. "
+                "Retrieval is NOT grounded: run scripts/build_clip_embeddings.py first. "
+                "Similarity scores will be reported as 0.0 (unavailable), never simulated."
+            )
         return {}
 
     def _init_clip_encoder(self):
@@ -120,9 +132,13 @@ class RAGKnowledgeBase:
             self.clip_model.eval()
             print("[RAGKnowledgeBase] Live CLIP image encoder ready.")
         except Exception as e:
-            print(f"[RAGKnowledgeBase] Warning: HuggingFace CLIP load failed ({e}). Using CPU mock vector encoder.")
+            print(
+                f"[RAGKnowledgeBase] [DEGRADED] HuggingFace CLIP load failed ({e}). "
+                "Live frame embedding is unavailable; retrieval runs in deterministic mock mode."
+            )
             self.clip_model = None
             self.clip_processor = None
+            self.encoder_mock = True
 
     def embed_live_frame(self, live_frame_or_crop: Union[np.ndarray, Image.Image]) -> torch.Tensor:
         """
@@ -150,8 +166,12 @@ class RAGKnowledgeBase:
 
                 return F.normalize(image_features, p=2, dim=-1)
         else:
-            mock_vec = torch.randn(1, 512, device=self.device)
-            return F.normalize(mock_vec, p=2, dim=-1)
+            # Deterministic zero vector: cosine similarity against any cached
+            # embedding is exactly 0.0, so mock mode can never masquerade as a
+            # plausible retrieval result the way a random vector would
+            if not self._degraded_warned:
+                print("[RAGKnowledgeBase] [MOCK] Encoding frames as zero vectors (no real CLIP).")
+            return torch.zeros(1, 512, device=self.device)
 
     def retrieve_context(
         self,
@@ -161,7 +181,17 @@ class RAGKnowledgeBase:
         """
         Embeds ONLY the live camera frame and performs high-speed cosine similarity search
         against pre-loaded offline KB feature tensors.
+
+        Degraded mode: when the embedding index or CLIP encoder is unavailable, similarity
+        is reported as exactly 0.0 with grounded=False. No random scores are ever produced.
         """
+        if (not self.embeddings_available or self.encoder_mock) and not self._degraded_warned:
+            print(
+                "[RAGKnowledgeBase] [DEGRADED RETRIEVAL] Results are NOT knowledge-grounded "
+                "(missing embeddings cache and/or CLIP encoder). Do not use as research output."
+            )
+            self._degraded_warned = True
+
         # 1. Embed live camera frame/crop
         live_embedding = self.embed_live_frame(live_frame_or_crop)
 
@@ -177,15 +207,20 @@ class RAGKnowledgeBase:
                 cached_emb = F.normalize(cached_emb, p=2, dim=-1)
 
                 similarity = F.cosine_similarity(live_embedding, cached_emb, dim=-1).item()
+                grounded = True
             else:
-                similarity = float(np.random.uniform(0.60, 0.90))
+                # Deterministic sentinel: missing class embedding is reported as
+                # unavailable, never simulated with a plausible random score
+                similarity = 0.0
+                grounded = False
 
             results.append({
                 "id": cls_id,
                 "name": cls_info.get("name", cls_id),
                 "description": cls_info.get("description", ""),
                 "prompt_template": cls_info.get("prompt_template", ""),
-                "similarity": float(similarity)
+                "similarity": float(similarity),
+                "grounded": grounded
             })
 
         # Sort descending by cosine similarity score

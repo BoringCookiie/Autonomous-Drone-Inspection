@@ -12,6 +12,7 @@ Description:
 
 import os
 import json
+import sys
 import argparse
 import torch
 import torch.nn.functional as F
@@ -36,7 +37,8 @@ def build_embeddings(
     ontology_path: str = "knowledge_base/defect_ontology.json",
     ref_crops_dir: str = "knowledge_base/ref_crops",
     output_path: str = "models/embeddings/clip_kb_embeddings.pt",
-    model_name: str = "openai/clip-vit-base-patch32"
+    model_name: str = "openai/clip-vit-base-patch32",
+    allow_mock: bool = False
 ):
     print(f"[INFO] Building offline CLIP embeddings using HuggingFace model: '{model_name}'")
     print(f"  Ontology Path : {ontology_path}")
@@ -59,7 +61,18 @@ def build_embeddings(
             model.eval()
             has_transformers = True
         except Exception as e:
-            print(f"[WARNING] Failed to load HuggingFace CLIP ({e}). Generating fallback random normalized tensors.")
+            if not allow_mock:
+                print(
+                    f"[ERROR] HuggingFace CLIP is unavailable ({e}). Refusing to write "
+                    "fabricated embeddings. Install transformers/CLIP and retry, or pass "
+                    "--mock explicitly for pipeline smoke tests (output is random, never "
+                    "valid research data)."
+                )
+                sys.exit(1)
+            print(
+                f"[WARNING] Failed to load HuggingFace CLIP ({e}). Generating MOCK random "
+                "tensors because --mock was requested. These are NOT research data."
+            )
             has_transformers = False
 
     if not os.path.exists(ontology_path):
@@ -127,9 +140,10 @@ def main():
     parser.add_argument("--ref-crops", default="knowledge_base/ref_crops", help="Directory of reference crops")
     parser.add_argument("--output", default="models/embeddings/clip_kb_embeddings.pt", help="Target cached tensor file")
     parser.add_argument("--model-name", default="openai/clip-vit-base-patch32", help="HuggingFace CLIP model ID")
+    parser.add_argument("--mock", action="store_true", help="Allow random fallback tensors when CLIP is unavailable (smoke tests only)")
     args = parser.parse_args()
 
-    build_embeddings(args.ontology, args.ref_crops, args.output, args.model_name)
+    build_embeddings(args.ontology, args.ref_crops, args.output, args.model_name, allow_mock=args.mock)
 
 
 if __name__ == '__main__':

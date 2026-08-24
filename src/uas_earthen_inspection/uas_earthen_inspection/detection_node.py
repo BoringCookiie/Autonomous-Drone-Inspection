@@ -178,7 +178,17 @@ class Qwen25VLDetector(BaseDetector):
                 for d in raw_dets:
                     bbox = d.get("bbox_xyxy", d.get("bbox", [0, 0, img_w, img_h]))
                     cls_id = str(d.get("class_id", "defect")).strip("{}")
-                    conf = float(d.get("confidence", 0.85))
+                    # A missing or unparseable confidence is malformed output: drop the
+                    # detection rather than substituting a plausible constant, which
+                    # would silently corrupt the ambiguity-band revisit logic
+                    if d.get("confidence") is None:
+                        print(f"[WARN] [Qwen25VLDetector] Dropping detection '{cls_id}': no confidence field in JSON response.")
+                        continue
+                    try:
+                        conf = float(d["confidence"])
+                    except (TypeError, ValueError):
+                        print(f"[WARN] [Qwen25VLDetector] Dropping detection '{cls_id}': unparseable confidence '{d.get('confidence')}'.")
+                        continue
                     parsed_list.append({
                         "bbox": [int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])],
                         "class_id": cls_id,
@@ -201,10 +211,20 @@ class Qwen25VLDetector(BaseDetector):
                 xmin = max(0, min(img_w, int(xmin_raw)))
                 ymax = max(0, min(img_h, int(ymax_raw)))
                 xmax = max(0, min(img_w, int(xmax_raw)))
-                conf = float(conf_raw) if conf_raw else 0.85
 
                 raw_label = label_braced if label_braced else label_unbraced
                 clean_label = raw_label.strip()
+
+                # Same rule as the JSON path: no confidence in the response means the
+                # detection is malformed and must be dropped, not assigned a default
+                if not conf_raw:
+                    print(f"[WARN] [Qwen25VLDetector] Dropping detection '{clean_label}': no confidence score in response.")
+                    continue
+                try:
+                    conf = float(conf_raw)
+                except ValueError:
+                    print(f"[WARN] [Qwen25VLDetector] Dropping detection '{clean_label}': unparseable confidence '{conf_raw}'.")
+                    continue
 
                 parsed_list.append({
                     "bbox": [xmin, ymin, xmax, ymax],

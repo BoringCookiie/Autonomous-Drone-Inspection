@@ -36,6 +36,7 @@ class RevisitWaypointGenerator(Node):
         self.declare_parameter('flight_strategy', 'revisit') # Options: single_pass | revisit
         self.declare_parameter('detections_topic', '/inspection/detections')
         self.declare_parameter('camera_depth_topic', '/camera/depth/image_raw')
+        self.declare_parameter('captured_depth_topic', '/inspection/captured_depth')
         self.declare_parameter('revisit_waypoints_topic', '/planner/revisit_waypoints')
         
         # Ambiguity threshold band
@@ -57,6 +58,7 @@ class RevisitWaypointGenerator(Node):
         self.strategy = self.get_parameter('flight_strategy').value
         self.det_topic = self.get_parameter('detections_topic').value
         self.depth_topic = self.get_parameter('camera_depth_topic').value
+        self.captured_depth_topic = self.get_parameter('captured_depth_topic').value
         self.revisit_topic = self.get_parameter('revisit_waypoints_topic').value
 
         self.c_min = self.get_parameter('confidence_ambiguity_min').value
@@ -72,6 +74,7 @@ class RevisitWaypointGenerator(Node):
 
         self.bridge = CvBridge()
         self.latest_depth_img = None
+        self.latest_captured_depth_msg = None  # depth frozen at the waypoint capture moment
         self.drone_pose: PoseStamped | None = None  # live vehicle pose from MAVROS
 
         # QoS for MAVROS topics (Best Effort)
@@ -83,6 +86,12 @@ class RevisitWaypointGenerator(Node):
         )
         self.sub_depth = self.create_subscription(
             Image, self.depth_topic, self.depth_callback, 10
+        )
+        # Capture-time depth published by per_waypoint_capture_node; preferred over
+        # the live stream because VLM inference delays detection by seconds while
+        # the vehicle keeps moving
+        self.sub_captured_depth = self.create_subscription(
+            Image, self.captured_depth_topic, self.captured_depth_callback, 10
         )
         # Vehicle pose for camera-frame → map-frame transform (no TF2 required)
         self.sub_pose = self.create_subscription(
@@ -103,12 +112,44 @@ class RevisitWaypointGenerator(Node):
         )
 
     def depth_callback(self, msg: Image):
-        """Caches depth map for 3D coordinate unprojection."""
+        """Caches live depth map as fallback for 3D coordinate unprojection."""
         try:
             # Handle float32 depth map encoding
             self.latest_depth_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
         except CvBridgeError as e:
             self.get_logger().error(f"Depth CV Bridge error: {e}")
+
+    def captured_depth_callback(self, msg: Image):
+        """Caches the depth frame frozen at the waypoint capture moment."""
+        self.latest_captured_depth_msg = msg
+
+    def _sample_depth_at(self, u: float, v: float) -> tuple:
+        """
+        Samples depth at pixel (u, v), preferring capture-time depth over the
+        live stream. Returns (depth_z, source_name); falls back to 3.0 m when
+        no depth source is available or the sampled pixel is invalid.
+        """
+        if self.latest_captured_depth_msg is not None:
+            try:
+                depth_img = self.bridge.imgmsg_to_cv2(
+                    self.latest_captured_depth_msg, desired_encoding='passthrough'
+                )
+                u_idx = int(clamp(u, 0, depth_img.shape[1] - 1))
+                v_idx = int(clamp(v, 0, depth_img.shape[0] - 1))
+                depth_z = float(depth_img[v_idx, u_idx])
+                if not math.isnan(depth_z) and depth_z > 0.0:
+                    return depth_z, 'captured_depth'
+            except CvBridgeError as e:
+                self.get_logger().error(f"Captured depth CV Bridge error: {e}")
+
+        if self.latest_depth_img is not None:
+            u_idx = int(clamp(u, 0, self.latest_depth_img.shape[1] - 1))
+            v_idx = int(clamp(v, 0, self.latest_depth_img.shape[0] - 1))
+            depth_z = float(self.latest_depth_img[v_idx, u_idx])
+            if not math.isnan(depth_z) and depth_z > 0.0:
+                return depth_z, 'live_depth'
+
+        return 3.0, 'fallback'
 
     def _pose_cb(self, msg: PoseStamped):
         """Cache the latest vehicle pose for coordinate transforms."""
@@ -193,16 +234,12 @@ class RevisitWaypointGenerator(Node):
                     f"in band [{self.c_min:.2f}, {self.c_max:.2f}]"
                 )
 
-                # Extract depth Z at bounding box center
-                if self.latest_depth_img is not None:
-                    u_idx = int(clamp(u, 0, self.latest_depth_img.shape[1] - 1))
-                    v_idx = int(clamp(v, 0, self.latest_depth_img.shape[0] - 1))
-                    depth_z = float(self.latest_depth_img[v_idx, u_idx])
-
-                    if math.isnan(depth_z) or depth_z <= 0.0:
-                        depth_z = 3.0  # Fallback distance if depth pixel invalid
-                else:
-                    depth_z = 3.0
+                # Extract depth Z at bounding box center (capture-time depth preferred)
+                depth_z, depth_source = self._sample_depth_at(u, v)
+                if depth_source == 'fallback':
+                    self.get_logger().warn(
+                        "No valid depth available; using fallback distance 3.0 m."
+                    )
 
                 # 1. Unproject 2D bbox center → 3D camera-frame coordinates
                 target_cam_x, target_cam_y, target_cam_z = self.unproject_2d_to_3d(u, v, depth_z)
@@ -238,6 +275,7 @@ class RevisitWaypointGenerator(Node):
 
                 self.get_logger().info(
                     f"  -> Generated 3D Revisit Waypoint (MAP FRAME):\n"
+                    f"     Depth source: {depth_source} (Z={depth_z:.2f}m)\n"
                     f"     Camera frame: ({target_cam_x:.2f}, {target_cam_y:.2f}, {target_cam_z:.2f})\n"
                     f"     Map frame target: ({target_map_x:.2f}, {target_map_y:.2f}, {target_map_z:.2f})\n"
                     f"     Standoff D_revisit: {d_revisit:.2f}m\n"

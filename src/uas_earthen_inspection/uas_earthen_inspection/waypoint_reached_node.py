@@ -24,7 +24,11 @@ class WaypointReachedNode(Node):
         self.declare_parameter('setpoint_topic', '/uas1/setpoint_position/local')
         self.declare_parameter('pose_topic', '/uas1/local_position/pose')
         self.declare_parameter('waypoint_reached_topic', '/uav/waypoint_reached')
-        self.declare_parameter('position_tolerance_m', 0.45)
+        # Must stay ABOVE path_follower's waypoint pop radius (0.6 m): the follower
+        # retargets as soon as the vehicle is within 0.6 m, so a smaller capture
+        # tolerance would let setpoints change before the trigger ever fires and
+        # silently skip per-waypoint captures.
+        self.declare_parameter('position_tolerance_m', 0.7)
 
         self.setpoint_topic = self.get_parameter('setpoint_topic').value
         self.pose_topic = self.get_parameter('pose_topic').value

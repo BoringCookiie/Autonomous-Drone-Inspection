@@ -8,6 +8,9 @@
     pose_topic: "/uas1/local_position/pose"
     waypoint_reached_topic: "/uav/waypoint_reached"
     captured_frame_topic: "/inspection/captured_frame"
+    captured_depth_topic: "/inspection/captured_depth"
+    # Capture trigger radius; must exceed path_follower's 0.6 m waypoint pop radius
+    position_tolerance_m: 0.7
     save_captured_frames: true
     output_dir: "/home/uas/rosbags/inspection_frames"
     detections_topic: "/inspection/detections"
