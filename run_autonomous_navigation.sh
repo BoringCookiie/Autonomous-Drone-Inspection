@@ -2,6 +2,8 @@
 # run_autonomous_navigation.sh - Orchestrateur de mission autonome
 set -e
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Configuration
 CONTAINER="uas_sim"
 GOAL_X=${1:-8.0}
@@ -91,7 +93,7 @@ if [[ "${PX4_GZ_MODEL_TARGET:-gz_x500_depth}" == *depth* ]]; then
     HAS_DEPTH="true"
 fi
 echo "[Master] Lancement de la pile de navigation (has_depth=${HAS_DEPTH})..."
-docker exec -d $CONTAINER bash -c "source /opt/ros/humble/setup.bash && export PYTHONPATH=\$PYTHONPATH:/home/uas/scripts && ros2 launch /home/uas/scripts/navigation/navigation_launch.py has_depth:=${HAS_DEPTH}"
+    docker exec -d "$CONTAINER" bash -c "source /opt/ros/humble/setup.bash && export PYTHONPATH=\$PYTHONPATH:/home/uas/scripts && export FASTRTPS_DEFAULT_PROFILES_FILE=/home/uas/fastdds_udp.xml && ros2 launch /home/uas/scripts/navigation/navigation_launch.py has_depth:=${HAS_DEPTH}"
 
 # Build and launch the inspection package against the migrated runtime.
 echo "[Master] Construction de la pile d'inspection..."
@@ -150,8 +152,8 @@ echo "----------------------------------------------------------------"
 cleanup() {
     echo -e "\n[Master] Arrêt de la mission..."
     
-    # Arrêt des nœuds de navigation
-    docker exec $CONTAINER bash -c "pkill -f 'planner_3d' || true; pkill -f 'path_follower' || true"
+    # Stop rosbag2 cooperatively first so metadata.yaml is finalized.
+    docker exec "$CONTAINER" bash /home/uas/scripts/simulation/cleanup_runtime.sh --recorders-only || true
     
     echo "[Master] Génération de la vidéo à partir du dernier rosbag..."
     # On laisse un peu de temps pour fermer le rosbag
@@ -166,8 +168,9 @@ cleanup() {
         echo "[Master] Vidéo non trouvée. Vérifiez les logs de analyze_rosbags.py."
     fi
     
-    # Arrêt de la simulation tmux
-    tmux kill-session -t uas_obstacle 2>/dev/null || true
+    # Stop every remaining project-owned process without touching unrelated
+    # ROS commands or relying on fragile inline pkill patterns.
+    "$ROOT/scripts/simulation/stop_simulation.sh" || true
     exit
 }
 

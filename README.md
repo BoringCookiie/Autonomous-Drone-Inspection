@@ -72,9 +72,9 @@ Autonomous-Drone-Inspection/
 ├── results/                # 6-condition sweep logs, Table 4 summaries & Figure 6 plots
 ├── rosbags/                # Flight bags, including migrated legacy evidence
 ├── scripts/
-│   ├── simulation/         # PX4 launch, flight, camera bridge, and noVNC tools
-│   ├── navigation/         # RTAB-Map, OctoMap, A*, follower, and goal tools
-│   └── analysis/           # Real rosbag telemetry analyzer
+│   ├── simulation/         # PX4 launch, flight, camera bridge, curated recorder, cleanup tools
+│   ├── navigation/         # RTAB-Map, OctoMap, A*, follower, coverage planner, TF bridge
+│   └── analysis/           # Bag analyzer, depth/PLY/trajectory exporters
 └── src/
     └── uas_earthen_inspection/   # Main ROS2 Python package
         ├── config/               # Parameters configuration (ambiguity thresholds, standoff math)
@@ -139,6 +139,48 @@ python scripts/generate_table4_figure6.py --input-dir results/sweeps --output-di
 
 ---
 
+## 🎬 Flight Artifacts & Resource Lifecycle
+
+Every run records an explicit curated topic list (`/clock`, camera RGB/depth,
+MAVROS telemetry, planner topics) — never `ros2 bag record -a`. After a
+flight, export the deliverables:
+
+```bash
+# RGB first-person view (validated; fails loudly if frames are missing/static)
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash; \
+python3 /home/uas/scripts/analysis/analyze_rosbags.py --bag latest \
+  --export-csv --export-video --video-topic /camera/color/image_raw'
+
+# Depth sensor-view video (fast SQLite+CDR path, self-verifying)
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash; \
+python3 /home/uas/scripts/analysis/export_depth_video.py /home/uas/rosbags/<bag> --every 3'
+
+# 3D world cloud from OctoMap -> PLY (CloudCompare/MeshLab/Open3D)
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash; \
+python3 /home/uas/scripts/analysis/octomap_to_ply.py /home/uas/rosbags/octomap_world.ply'
+
+# Trajectory plot from exported CSVs
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash; \
+python3 /home/uas/scripts/analysis/plot_trajectory.py \
+  /home/uas/rosbags/<bag>/analysis/local_position.csv \
+  /home/uas/rosbags/<bag>/analysis/trajectory.png'
+```
+
+Stop a run cleanly between sessions (kills tmux, finalizes rosbag metadata,
+removes every project-owned process — PX4/Gazebo/MAVROS/bridges/nav nodes —
+without touching unrelated ROS commands):
+
+```bash
+scripts/simulation/stop_simulation.sh            # runtime only
+scripts/simulation/stop_simulation.sh --down     # also `compose down`
+```
+
+`launch_obstacle_stack.sh` runs the same cleanup automatically before
+starting. See [`docs/simulation_commands.md`](docs/simulation_commands.md)
+for the full reference.
+
+---
+
 ## Current Simulation Command Reference
 
 The complete command reference for the validated PX4/Gazebo/MAVROS/camera setup is in [`docs/simulation_commands.md`](docs/simulation_commands.md). It covers:
@@ -146,11 +188,12 @@ The complete command reference for the validated PX4/Gazebo/MAVROS/camera setup 
 - Container build, PX4 bootstrap, and ROS2 workspace build.
 - GUI, headless, mono-camera, and RGB-D launches.
 - Gazebo and canonical ROS camera diagnostics.
-- Rosbag listing, CSV export, and authoritative RGB MP4 export.
+- Rosbag listing, CSV export, authoritative RGB MP4, depth sensor-view video,
+  OctoMap-to-PLY world cloud, and trajectory plotting.
 - Inspection pipeline launch for YOLO single-pass and revisit modes.
 - YOLOv11 training and model placement.
 - CLIP knowledge-base embedding generation.
-- Navigation, health checks, shutdown, and stale-process recovery.
+- Navigation, health checks, clean shutdown, and orphan-process cleanup.
 
 The teammate-facing architecture and integration contract for the Person 1 RAG-VLM work and the Person 2 YOLO work is documented in [`docs/person1_ai_vlm_yolo_integration.tex`](docs/person1_ai_vlm_yolo_integration.tex). The LaTeX file is an integration guide; model-dependent VLM commands must not be treated as runnable in the simulation image until the dedicated AI dependencies are installed.
 

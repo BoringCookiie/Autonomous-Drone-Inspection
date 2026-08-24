@@ -20,6 +20,6 @@ The migrated launcher keeps the old `/uas1` MAVROS namespace and adds the inspec
 - `/camera/depth/image_raw`
 - `/camera/color/camera_info`
 
-The new `waypoint_reached_node` converts streamed MAVROS setpoints and local pose into `/uav/waypoint_reached`. The migrated A* planner consumes `/planner/revisit_waypoints` in addition to its original manual `/navigation/goal` input.
+The new `waypoint_reached_node` converts streamed MAVROS setpoints and local pose into `/uav/waypoint_reached`. The capture node additionally republishes the depth frame frozen at the waypoint moment on `/inspection/captured_depth`, so revisit unprojection uses capture-time geometry. The migrated A* planner consumes `/planner/revisit_waypoints` in addition to its original manual `/navigation/goal` input.
 
 The original files are retained as historical documentation under `docs/legacy/`. The old project directory itself is intentionally untouched.

@@ -129,6 +129,62 @@ rosbags/<bag-name>/analysis/state.csv
 
 The exporter fails when a moving flight has no decodable RGB frames or every decoded frame is identical.
 
+### Depth Sensor-View Video (fast path)
+
+Exports the depth stream as a Turbo-colormapped H.264 video. This reads the
+bag's SQLite database directly and parses the Image CDR wire format with
+numpy — roughly 100x faster than the generic analyzer for this topic, and it
+decodes its own output before declaring success:
+
+```bash
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash; \
+python3 /home/uas/scripts/analysis/export_depth_video.py \
+  /home/uas/rosbags/<bag-name> --every 3'
+```
+
+Output: `rosbags/<bag-name>/analysis/depth_sensor_view.mp4`.
+Options: `--fps 15`, `--every 3` (frame decimation), `--colormap jet`,
+`-o custom.mp4`.
+
+Requires `ffmpeg` inside the container (installed via the Dockerfile; on
+older containers run `sudo apt-get install -y ffmpeg` once).
+
+### 3D World Point Cloud (OctoMap export)
+
+While the simulation and the navigation stack are running, OctoMap fuses the
+depth stream into a filtered voxel map. Export that finished map as a colored
+binary PLY readable by CloudCompare, MeshLab, Open3D, or Blender:
+
+```bash
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash; \
+python3 /home/uas/scripts/analysis/octomap_to_ply.py /home/uas/rosbags/octomap_world.ply'
+```
+
+Optional: `--timeout 30` (seconds to wait for a message), `--topic T`.
+
+### Flight Trajectory Plot
+
+After `--export-csv`, plot top-down track, altitude profile, and X/Y vs time:
+
+```bash
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash; \
+python3 /home/uas/scripts/analysis/plot_trajectory.py \
+  /home/uas/rosbags/<bag-name>/analysis/local_position.csv \
+  /home/uas/rosbags/<bag-name>/analysis/trajectory.png'
+```
+
+### Offline Depth+RGB+Pose Fusion (advanced, slow)
+
+`build_world_cloud.py` fuses raw depth, RGB and poses from any bag into an
+RGB-colored PLY. It streams with bounded memory (~100 MB), but prefer the
+OctoMap export above for large bags — it is faster and produces a cleaner map:
+
+```bash
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash; \
+python3 /home/uas/scripts/analysis/build_world_cloud.py \
+  /home/uas/rosbags/<bag-name> world_cloud.ply --stride 8'
+```
+
 Inspect a specific bag:
 
 ```bash
@@ -224,11 +280,26 @@ docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash; python3 /home/u
 ./health_check.sh
 ```
 
-Stop the tmux processes and container:
+Stop a run cleanly (kills tmux session, stops rosbag2 with SIGINT so
+metadata.yaml is finalized, then removes every project-owned process —
+PX4, Gazebo, MAVROS, bridges, nav nodes — without touching unrelated ROS
+commands):
 
 ```bash
-tmux kill-session -t uas_obstacle 2>/dev/null || true
-docker compose --project-directory . -f docker/docker-compose.yml --profile sim down
+scripts/simulation/stop_simulation.sh            # runtime only
+scripts/simulation/stop_simulation.sh --down     # also `compose down`
+```
+
+`launch_obstacle_stack.sh` runs the same cleanup automatically before
+starting, so stale orphans from previous runs cannot accumulate. The
+curated recorder (`--no-fly` window) records an explicit topic list
+including `/clock`; never use bare `ros2 bag record -a` here — raw
+MAVLink streams alone produced a 105 GB bag.
+
+Stop only the recorders (e.g. before analyzing while leaving the sim up):
+
+```bash
+docker exec uas_sim bash /home/uas/scripts/simulation/cleanup_runtime.sh --recorders-only
 ```
 
 If stale PX4/Gazebo processes remain:
