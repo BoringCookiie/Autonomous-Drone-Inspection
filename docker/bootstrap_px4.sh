@@ -65,7 +65,8 @@ if [ -d "$SRC_MODELS_DIR" ]; then
   cp -rf "$SRC_MODELS_DIR"/. "$PX4_GZ_MODELS_DIR"/
 fi
 
-if [ -f "/home/uas/docker/fastdds_udp.xml" ]; then
+if [ -f "/home/uas/docker/fastdds_udp.xml" ] && \
+   [ ! -f "/home/uas/fastdds_udp.xml" ]; then
   cp -f /home/uas/docker/fastdds_udp.xml /home/uas/fastdds_udp.xml
 fi
 
@@ -86,12 +87,18 @@ if [ -f "$PX4_DIR/Tools/simulation/gz/models/OakD-Lite/model.sdf" ]; then
   sed -i 's/<height>1080<\/height>/<height>480<\/height>/g' "$PX4_DIR/Tools/simulation/gz/models/OakD-Lite/model.sdf"
 fi
 
-if [ -f "$PX4_DIR/ROMFS/px4fmu_common/init.d-posix/px4-rc.params" ]; then
-  cat << 'EOF' > "$PX4_DIR/ROMFS/px4fmu_common/init.d-posix/px4-rc.params"
+mkdir -p "$PX4_DIR/ROMFS/px4fmu_common/init.d-posix"
+cat << 'EOF' > "$PX4_DIR/ROMFS/px4fmu_common/init.d-posix/px4-rc.params"
 #!/bin/sh
+# Keep the same contract as the documented PX4 SITL sensor defaults. The
+# custom x500_depth model supplies IMU/barometer/GPS through Gazebo/PX4's
+# simulation bridge; the simulated GPS and magnetometer must remain enabled.
+param set-default SENS_EN_GPSSIM 1
+param set-default SENS_EN_MAGSIM 1
+param set-default SENS_EN_BAROSIM 0
 param set COM_ARM_WO_GPS 1
 param set COM_ARM_SWISBTN 1
-param set COM_RC_IN_MODE 4
+param set COM_RC_IN_MODE 1
 param set COM_RCL_EXCEPT 4
 param set NAV_RCL_ACT 0
 param set NAV_DLL_ACT 0
@@ -103,7 +110,6 @@ param set CBRK_IO_SAFETY 22027
 param set COM_ARM_MAG_STR 0
 param set COM_DISARM_LAND 2.0
 EOF
-fi
 
 echo "[bootstrap_px4] Building PX4 SITL firmware"
 make px4_sitl_default
