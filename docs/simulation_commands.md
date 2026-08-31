@@ -259,13 +259,36 @@ Do not use random fallback embeddings for reported experiments.
 
 ## Navigation Stack
 
+Before starting a simulation, run the static preflight. It verifies the
+world/model assets, required ROS dependencies, executable scripts, and that
+no previous project runtime is still alive:
+
+```bash
+scripts/navigation/preflight_navigation.sh
+```
+
+At runtime, `navigation_launch.py` starts a communication gate. It checks
+types, endpoint QoS, live rates, timestamps, TF, and OctoMap bounds. The
+follower will not arm until `/navigation/preflight_ok` is true. Inspect it
+with:
+
+```bash
+docker exec uas_sim bash -lc 'source /opt/ros/humble/setup.bash; ros2 topic echo /navigation/preflight_ok --once'
+```
+
 The complete orchestration is available through:
 
 ```bash
 ./run_autonomous_navigation.sh 8.0 0.5 1.5
 ```
 
-This launches the depth simulation, MAVROS, recording, RTAB-Map, OctoMap, planner, follower, and inspection package before sending a goal. The depth simulation currently requires separate control/telemetry validation; use the mono-camera launcher for the stable camera-flight baseline.
+The obstacle-maze mission uses a robust A* planner and MAVROS controller for navigating dynamic environments. To run the optimized v2 stack (with improved EKF stabilization, takeoff tracking, path smoothing, and zero-bloat curated rosbags):
+
+```bash
+bash scripts/navigation/run_maze_mission_v2.sh
+```
+
+This launches the depth simulation, MAVROS, recording, OctoMap, A* planner, and the maze_navigator before sending the goal `(4.0, 7.0, 1.5)`. You can view the full navigation proof, plotted trajectory, and extracted CSV metrics in the `results/` directory generated after each mission.
 
 Manual navigation commands:
 
