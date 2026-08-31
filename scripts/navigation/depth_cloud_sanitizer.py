@@ -27,7 +27,9 @@ class DepthCloudSanitizer(Node):
         super().__init__('depth_cloud_sanitizer')
         self.declare_parameter('input_topic', '/points')
         self.declare_parameter('output_topic', '/points_clean')
-        self.declare_parameter('output_frame_id', 'depth_camera')
+        # Empty means preserve the Gazebo frame. Relabelling a cloud without
+        # transforming its coordinates corrupts the map.
+        self.declare_parameter('output_frame_id', '')
         self.pub = self.create_publisher(
             PointCloud2, self.get_parameter('output_topic').value, 10
         )
@@ -54,7 +56,9 @@ class DepthCloudSanitizer(Node):
 
             out = PointCloud2()
             out.header = msg.header
-            out.header.frame_id = self.get_parameter('output_frame_id').value
+            output_frame = self.get_parameter('output_frame_id').value
+            if output_frame:
+                out.header.frame_id = output_frame
             out.height = 1
             out.width = int(clean.shape[0])
             out.fields = [

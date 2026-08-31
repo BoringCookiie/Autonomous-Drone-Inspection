@@ -39,9 +39,16 @@ class TfBridge(Node):
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('camera_frame', 'depth_camera')
+        self.declare_parameter(
+            'sensor_frame', 'x500_depth_0/rgbd_camera_link/rgbd_camera'
+        )
         self.declare_parameter('cam_x', 0.12)
         self.declare_parameter('cam_y', 0.03)
         self.declare_parameter('cam_z', 0.242)
+        # The RGB-D sensor is offset from rgbd_camera_link in model.sdf.
+        self.declare_parameter('sensor_x', 0.13233)
+        self.declare_parameter('sensor_y', 0.0)
+        self.declare_parameter('sensor_z', 0.26078)
 
         self.tf_broadcaster = TransformBroadcaster(self)
         self.static_broadcaster = StaticTransformBroadcaster(self)
@@ -55,6 +62,20 @@ class TfBridge(Node):
                               self.get_parameter('cam_y').value,
                               self.get_parameter('cam_z').value),
         ]
+        sensor_frame = self.get_parameter('sensor_frame').value
+        if sensor_frame and sensor_frame != camera_frame:
+            self.static_transforms.append(
+                self._make_static(
+                    base,
+                    sensor_frame,
+                    self.get_parameter('sensor_x').value,
+                    self.get_parameter('sensor_y').value,
+                    self.get_parameter('sensor_z').value,
+                )
+            )
+        # Alias MAVROS 'map' frame as 'odom' (navigation world frame) — the stack
+        # treats them as identical. Publish identity so lookups on either succeed.
+        self.static_transforms.append(self._make_static('map', 'odom', 0, 0, 0))
         self.static_broadcaster.sendTransform(self.static_transforms)
         # Re-latch periodically as protection for late subscribers.
         self.create_timer(

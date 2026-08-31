@@ -18,6 +18,8 @@ matches_runtime() {
     *"/home/uas/scripts/navigation/navigation_launch.py"*|\
     *"/home/uas/scripts/navigation/planner_3d.py"*|\
     *"/home/uas/scripts/navigation/path_follower.py"*|\
+    *"/home/uas/scripts/navigation/maze_navigator.py"*|\
+    *"/home/uas/scripts/navigation/maze_navigation_test.py"*|\
     *"/home/uas/scripts/navigation/coverage_planner.py"*|\
     *"/home/uas/scripts/navigation/tf_bridge_node.py"*|\
     *"/home/uas/scripts/navigation/depth_cloud_sanitizer.py"*|\
@@ -47,7 +49,7 @@ collect_pids() {
     [ "$pid" = "$SELF" ] && continue
     [ -n "${PARENT:-}" ] && [ "$pid" = "$PARENT" ] && continue
     [ "$pid" = "1" ] && continue
-    matches_runtime "$command" || continue
+    matches_runtime "$command" || [[ "$command" == *"ros2 run mavros"* ]] || [[ "$command" == *"ros2 run ros_gz_bridge"* ]] || [[ "$command" == *"communication_preflight.py"* ]] || [[ "$command" == *"maze_navigator"* ]] || [[ "$command" == *"maze_navigation_test"* ]] || continue
     printf '%s\n' "$pid"
   done
 }

@@ -9,11 +9,13 @@ fi
 CONTAINER="${UAS_SIM_CONTAINER:-uas_sim}"
 PX4_GZ_WORLD="${PX4_GZ_WORLD:-earthen_heritage_wall}"
 PX4_GZ_MODEL_TARGET="${PX4_GZ_MODEL_TARGET:-gz_x500_mono_cam}"
+PX4_GZ_MODEL_POSE="${PX4_GZ_MODEL_POSE:-}"
 HEADLESS="${HEADLESS:-1}"
 
 docker exec -i \
   -e PX4_GZ_WORLD="$PX4_GZ_WORLD" \
   -e PX4_GZ_MODEL_TARGET="$PX4_GZ_MODEL_TARGET" \
+  -e PX4_GZ_MODEL_POSE="$PX4_GZ_MODEL_POSE" \
   -e HEADLESS="$HEADLESS" \
   "$CONTAINER" bash -c '
 set -e
@@ -83,7 +85,7 @@ fi
 
 echo "[run_obstacle_flight] Starting PX4 SITL..."
 cd /home/uas/PX4-Autopilot/build/px4_sitl_default
-rm -rf parameters* rootfs/fs/microsd/parameters* dataman
+rm -rf parameters* rootfs/fs/microsd/parameters* rootfs/parameters*.bson dataman rootfs/dataman
 env PX4_SIM_MODEL="$PX4_GZ_MODEL_TARGET" bin/px4 -d
 echo "[run_obstacle_flight] PX4 SITL daemon started. Monitoring PX4 process..."
 while pgrep -f "bin/px4" >/dev/null 2>&1 || pgrep -f "gz sim" >/dev/null 2>&1; do

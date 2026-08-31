@@ -31,6 +31,18 @@ def generate_launch_description():
             default_value='false',
             description='Whether the drone model has a depth camera (gz_x500_depth=true, mono_cam=false)'
         ),
+        DeclareLaunchArgument(
+            'require_preflight',
+            default_value='true',
+            description='Do not arm until communication_preflight publishes readiness'
+        ),
+        DeclareLaunchArgument('takeoff_x', default_value='0.0'),
+        DeclareLaunchArgument('takeoff_y', default_value='2.25'),
+        DeclareLaunchArgument('takeoff_z', default_value='2.0'),
+        DeclareLaunchArgument(
+            'queue_planned_paths', default_value='true',
+            description='Queue A* paths during coverage; false replaces paths for dynamic maze replanning'
+        ),
     ]
 
     # ------------------------------------------------------------------
@@ -40,7 +52,11 @@ def generate_launch_description():
         Node(
             executable='python3', arguments=[os.path.join(nav_dir, 'tf_bridge_node.py')],
             name='tf_bridge', output='screen',
-            parameters=[{'use_sim_time': True, 'camera_frame': 'depth_camera'}]
+            parameters=[{
+                'use_sim_time': True,
+                'camera_frame': 'depth_camera',
+                'sensor_frame': 'x500_depth_0/rgbd_camera_link/rgbd_camera',
+            }]
         ),
         Node(
             executable='python3', arguments=[os.path.join(nav_dir, 'planner_3d.py')],
@@ -50,7 +66,14 @@ def generate_launch_description():
         Node(
             executable='python3', arguments=[os.path.join(nav_dir, 'path_follower.py')],
             name='path_follower', output='screen',
-            parameters=[{'use_sim_time': True}]
+            parameters=[{
+                'use_sim_time': True,
+                'require_preflight': LaunchConfiguration('require_preflight'),
+                'takeoff_x': LaunchConfiguration('takeoff_x'),
+                'takeoff_y': LaunchConfiguration('takeoff_y'),
+                'takeoff_z': LaunchConfiguration('takeoff_z'),
+                'queue_planned_paths': LaunchConfiguration('queue_planned_paths'),
+            }]
         ),
     ]
 
@@ -93,7 +116,7 @@ def generate_launch_description():
                 executable='python3',
                 arguments=[os.path.join(nav_dir, 'depth_cloud_sanitizer.py')],
                 name='depth_cloud_sanitizer', output='screen',
-                parameters=[{'use_sim_time': True, 'output_frame_id': 'depth_camera'}]
+                parameters=[{'use_sim_time': True, 'output_frame_id': ''}]
             ))
             nodes.append(Node(
                 package='octomap_server',
@@ -103,6 +126,16 @@ def generate_launch_description():
                 parameters=[{'use_sim_time': True, 'resolution': 0.2, 'frame_id': 'odom'}],
                 remappings=[('cloud_in', '/points_clean')]
             ))
+
+        nodes.append(Node(
+            executable='python3',
+            arguments=[os.path.join(nav_dir, 'communication_preflight.py')],
+            name='communication_preflight', output='screen',
+            parameters=[{
+                'use_sim_time': True,
+                'require_depth': depth_available,
+            }]
+        ))
 
         if LaunchConfiguration('enable_slam').perform(context) == 'true':
             if depth_available:

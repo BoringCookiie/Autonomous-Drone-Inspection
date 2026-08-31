@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import rclpy
+import math
 from rclpy.node import Node
 from geometry_msgs.msg import PoseArray, PoseStamped
 from nav_msgs.msg import Path
@@ -9,14 +10,46 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 import sensor_msgs_py.point_cloud2 as pc2
 import numpy as np
 import heapq
+import time
 
 class Planner3D(Node):
     def __init__(self):
         super().__init__('planner_3d')
         self.res = 0.2
-        self.inflation_radius = 2  # nodes (0.4m)
+        self.declare_parameter('inflation_radius', 2)  # cells (1 = 0.2m, 2 = 0.4m) - increased for maze wall clearance
+        self.declare_parameter('max_abs_coordinate_m', 30.0)
+        self.declare_parameter('max_obstacle_z_m', 8.0)
+        self.declare_parameter('max_obstacle_points', 200000)
+        self.declare_parameter('max_search_nodes', 400000)
+        self.declare_parameter('search_margin_m', 6.0)
+        self.declare_parameter('min_flight_z_m', 1.5)
+        self.declare_parameter('max_flight_z_m', 2.5)
+        self.declare_parameter('path_horizon_m', 2.0)
+        self.max_abs_coordinate = float(self.get_parameter('max_abs_coordinate_m').value)
+        self.inflation_radius = int(self.get_parameter('inflation_radius').value)
+        self.max_obstacle_z = float(self.get_parameter('max_obstacle_z_m').value)
+        self.max_obstacle_points = int(self.get_parameter('max_obstacle_points').value)
+        self.max_search_nodes = int(self.get_parameter('max_search_nodes').value)
+        self.search_margin_cells = max(1, int(
+            float(self.get_parameter('search_margin_m').value) / self.res
+        ))
+        self.min_flight_z_cell = round(
+            float(self.get_parameter('min_flight_z_m').value) / self.res
+        )
+        self.max_flight_z_cell = round(
+            float(self.get_parameter('max_flight_z_m').value) / self.res
+        )
+        self.path_horizon_m = float(self.get_parameter('path_horizon_m').value)
         self.obstacles = set()
         self.pose = None
+        self._map_received_at = 0.0
+        self._last_map_frame = ''
+        self._last_goal = None
+        self._active_goal_pose = None
+        self._last_plan_at = 0.0
+        self._planning = False
+        self.declare_parameter('replan_period_s', 3.0)
+        self.replan_period_s = float(self.get_parameter('replan_period_s').value)
 
         # FIFO queue of revisit Pose objects (from /planner/revisit_waypoints PoseArrays)
         self._revisit_queue: list = []
@@ -39,20 +72,69 @@ class Planner3D(Node):
         self.get_logger().info("Planner 3D (A* with Inflation, FIFO revisit queue) initialized.")
 
     def pc_cb(self, msg):
+        if msg.header.frame_id != 'odom':
+            self.get_logger().warn(
+                f"Ignoring obstacle map in frame {msg.header.frame_id!r}; expected 'odom'.",
+                throttle_duration_sec=5.0,
+            )
+            return
         new_obs = set()
+        accepted = 0
         for p in pc2.read_points(msg, skip_nans=True):
-            if p[2] < 0.15: continue # Ignore ground
-            ox, oy, oz = round(p[0]/self.res), round(p[1]/self.res), round(p[2]/self.res)
+            x, y, z = (float(p[0]), float(p[1]), float(p[2]))
+            if not all(np.isfinite((x, y, z))):
+                continue
+            if z < 0.15 or z > self.max_obstacle_z:
+                continue  # Ignore ground and implausible transformed returns.
+            if max(abs(x), abs(y)) > self.max_abs_coordinate:
+                continue
+            accepted += 1
+            if accepted > self.max_obstacle_points:
+                break
+            ox, oy, oz = round(x/self.res), round(y/self.res), round(z/self.res)
             # Inflate
             for dx in range(-self.inflation_radius, self.inflation_radius+1):
                 for dy in range(-self.inflation_radius, self.inflation_radius+1):
                     for dz in range(-self.inflation_radius, self.inflation_radius+1):
                         new_obs.add((ox+dx, oy+dy, oz+dz))
         self.obstacles = new_obs
+        self._map_received_at = time.monotonic()
+        self._last_map_frame = msg.header.frame_id
+        self.get_logger().info(
+            f'Obstacle map accepted: {accepted} points, {len(new_obs)} inflated cells.',
+            throttle_duration_sec=5.0,
+        )
+        if (
+            self._active_goal_pose is not None
+            and self.pose is not None
+            and not self._planning
+            and time.monotonic() - self._last_plan_at >= self.replan_period_s
+        ):
+            # A depth camera observes the maze incrementally. Replan from the
+            # current pose after new occupied cells arrive instead of trusting
+            # a one-shot path through still-unseen obstacles.
+            self.plan(self._active_goal_pose)
 
     def pose_cb(self, msg): self.pose = msg.pose
 
     def goal_cb(self, msg):
+        if msg.header.frame_id not in ('', 'odom', 'map'):
+            self.get_logger().error(
+                f"Rejecting goal in unsupported frame {msg.header.frame_id!r}; use odom."
+            )
+            return
+        goal_key = (
+            round(float(msg.pose.position.x), 3),
+            round(float(msg.pose.position.y), 3),
+            round(float(msg.pose.position.z), 3),
+        )
+        if goal_key == self._last_goal:
+            self.get_logger().info(
+                f'Ignoring duplicate goal {goal_key}; existing plan is authoritative.'
+            )
+            return
+        self._last_goal = goal_key
+        self._active_goal_pose = msg.pose
         if not self.pose:
             self.get_logger().warn("Current pose unknown, waiting...")
             return
@@ -97,42 +179,49 @@ class Planner3D(Node):
             f"({next_pose.position.x:.2f}, {next_pose.position.y:.2f}, {next_pose.position.z:.2f}), "
             f"{len(self._revisit_queue)} leg(s) remaining."
         )
+        self._active_goal_pose = None
         self.plan(next_pose)
 
     def plan(self, goal_pose):
-        start = (round(self.pose.position.x/self.res), round(self.pose.position.y/self.res), round(self.pose.position.z/self.res))
+        if self._planning:
+            return
+        self._planning = True
+        self._last_plan_at = time.monotonic()
+        try:
+            self._plan_impl(goal_pose)
+        finally:
+            self._planning = False
+
+    def _plan_impl(self, goal_pose):
+        start = (
+            round(self.pose.position.x / self.res),
+            round(self.pose.position.y / self.res),
+            max(self.min_flight_z_cell, round(self.pose.position.z / self.res)),
+        )
         goal = (round(goal_pose.position.x/self.res), round(goal_pose.position.y/self.res), round(goal_pose.position.z/self.res))
         
         self.get_logger().info(f"Planning attempt: Start {start} -> Goal {goal} (Obstacles: {len(self.obstacles)})")
         
-        if start in self.obstacles:
-            self.get_logger().warn(f"START POSITION {start} IS IN OBSTACLE! Path might be blocked.")
-        
-        if goal in self.obstacles:
-            self.get_logger().error(f"GOAL POSITION {goal} IS IN OBSTACLE! Searching for nearest free node...")
-            # Simple search for nearest free node
-            found_free = False
-            for r in range(1, 5):
-                for dx in range(-r, r+1):
-                    for dy in range(-r, r+1):
-                        for dz in range(-r, r+1):
-                            candidate = (goal[0]+dx, goal[1]+dy, goal[2]+dz)
-                            if candidate not in self.obstacles:
-                                goal = candidate
-                                found_free = True
-                                break
-                        if found_free: break
-                    if found_free: break
-                if found_free: break
-            
-            if found_free:
-                self.get_logger().info(f"New reachable goal selected: {goal}")
-            else:
-                self.get_logger().error("Could not find free node near goal. Planning will likely fail.")
+        start = self._nearest_free(start, 'start')
+        goal = self._nearest_free(goal, 'goal')
+        if start is None or goal is None:
+            self.get_logger().error('No free start/goal cell exists in the validated map.')
+            return
 
         frontier = [(0, start)]
         came_from = {start: None}
         cost = {start: 0}
+        min_bound = [
+            min(start[i], goal[i]) - self.search_margin_cells for i in range(3)
+        ]
+        max_bound = [
+            max(start[i], goal[i]) + self.search_margin_cells for i in range(3)
+        ]
+        # Never generate a route through the ground. The previous planner
+        # ignored ground returns and consequently selected z < 0 waypoints.
+        min_bound[2] = max(min_bound[2], self.min_flight_z_cell)
+        max_bound[2] = min(max_bound[2], self.max_flight_z_cell)
+        expanded = 0
 
         # 26-connectivity
         neighbors = []
@@ -144,12 +233,20 @@ class Planner3D(Node):
 
         while frontier:
             curr = heapq.heappop(frontier)[1]
+            expanded += 1
+            if expanded > self.max_search_nodes:
+                self.get_logger().error(
+                    f'A* aborted at {expanded} nodes; map or frame contract is invalid.'
+                )
+                break
             if np.linalg.norm(np.array(curr)-np.array(goal)) < 1.0: # Close enough
                 goal = curr
                 break
             
             for d in neighbors:
                 nxt = (curr[0]+d[0], curr[1]+d[1], curr[2]+d[2])
+                if any(nxt[i] < min_bound[i] or nxt[i] > max_bound[i] for i in range(3)):
+                    continue
                 if nxt in self.obstacles: continue
                 
                 step_cost = np.sqrt(d[0]**2 + d[1]**2 + d[2]**2)
@@ -169,16 +266,57 @@ class Planner3D(Node):
             curr = goal
             while curr:
                 ps = PoseStamped()
+                ps.header.frame_id = 'odom'
+                ps.header.stamp = path.header.stamp
                 ps.pose.position.x = float(curr[0]*self.res)
                 ps.pose.position.y = float(curr[1]*self.res)
                 ps.pose.position.z = float(curr[2]*self.res)
+                ps.pose.orientation.w = 1.0
                 path.poses.append(ps)
                 curr = came_from[curr]
             path.poses.reverse()
+            if self.path_horizon_m > 0.0 and len(path.poses) > 1:
+                horizon = [path.poses[0]]
+                distance = 0.0
+                for previous, current in zip(path.poses, path.poses[1:]):
+                    a = previous.pose.position
+                    b = current.pose.position
+                    distance += math.sqrt(
+                        (b.x - a.x) ** 2 +
+                        (b.y - a.y) ** 2 +
+                        (b.z - a.z) ** 2
+                    )
+                    horizon.append(current)
+                    if distance >= self.path_horizon_m:
+                        break
+                path.poses = horizon
             self.path_pub.publish(path)
-            self.get_logger().info(f"Path published: {len(path.poses)} points.")
+            self.get_logger().info(
+                f"Path published: {len(path.poses)} points "
+                f"(receding horizon={self.path_horizon_m:.1f}m)."
+            )
         else:
             self.get_logger().error(f"No path found after checking {len(came_from)} nodes!")
+
+    def _nearest_free(self, cell, label):
+        if cell not in self.obstacles:
+            return cell
+        self.get_logger().warn(
+            f'{label.upper()} POSITION {cell} IS IN OBSTACLE; searching nearby free cells.'
+        )
+        for radius in range(1, 11):
+            candidates = []
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    for dz in range(-radius, radius + 1):
+                        candidate = (cell[0] + dx, cell[1] + dy, cell[2] + dz)
+                        if candidate not in self.obstacles:
+                            candidates.append(candidate)
+            if candidates:
+                selected = min(candidates, key=lambda c: np.linalg.norm(np.array(c) - np.array(cell)))
+                self.get_logger().info(f'{label.capitalize()} snapped to free cell {selected}.')
+                return selected
+        return None
 
 def main():
     rclpy.init(); rclpy.spin(Planner3D()); rclpy.shutdown()
