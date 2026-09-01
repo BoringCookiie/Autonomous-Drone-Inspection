@@ -84,6 +84,50 @@ Autonomous-Drone-Inspection/
 
 ---
 
+## 🚀 Final Article Experiment Guide (YOLOv11s on Custom GLB)
+
+**This section is the absolute single source of truth for executing the final article experiment combining the custom earthen housing GLB map, the fully trained YOLOv11s model, and the A* confidence-revisit flight strategy on an NVIDIA GPU.**
+
+### 1. Prerequisite: NVIDIA GPU & Container Toolkit
+The experiment is orchestrated using Docker Compose to isolate the physics simulation from the AI inference stack. However, since the YOLOv11s model requires sub-10ms inference times (and Gazebo requires heavy 3D acceleration), the host machine *must* have an NVIDIA GPU.
+
+Ensure the host Ubuntu machine has the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed. If you can run `nvidia-smi` inside a docker container, you are ready.
+
+### 2. Required Assets Placement
+Before running the master script, you must place the trained weights and the custom map exactly in the following directories (the script will refuse to run without them):
+
+*   **YOLOv11s Weights:**
+    Place the `.pt` file containing the weights trained by the Data Lead here:
+    `models/yolo/yolo_earthen_v11.pt`
+    *(The YOLO detection node will automatically lazy-load this file into the AI container's VRAM).*
+
+*   **Custom Houses GLB Map:**
+    Place the `.glb` 3D map containing the earthen houses and cracks here:
+    `gazebo_simulation/worlds/custom_map.glb`
+    *(The simulation uses a custom `custom_inspection.sdf` Gazebo world which is hardcoded to dynamically import this specific `.glb` file at origin `(0,0,0)`.)*
+
+### 3. Execution Orchestration
+Once the assets are in place, the entire pipeline is automated. Run this master script from the repository root:
+
+```bash
+bash scripts/run_final_article_experiment.sh
+```
+
+**What this script does autonomously:**
+1.  **Container Provisioning:** Launches the `uas_sim_headless` container (for Gazebo/PX4) and the `uas_ai_gpu` container (with `runtime: nvidia` for PyTorch/YOLO inference).
+2.  **Simulation & Navigation:** Boots PX4, OctoMap, and the A* planner targeting the `custom_inspection` world.
+3.  **AI Pipeline:** Starts the ROS2 inspection pipeline (`inspection_pipeline.launch.py`) configured strictly with `detector_backend:=yolo` and `flight_strategy:=revisit`.
+4.  **Coverage Flight:** Dispatch a sequence of waypoints covering the map. The revisit-generator will automatically interrupt the planner to zoom in on any ambiguous cracks detected by YOLO.
+5.  **Metrics Export:** When the drone completes the mission, the script safely halts recording, kills the simulation, and runs the analyzer.
+
+### 4. Retrieving Your Data
+At the end of the script execution, look inside the `rosbags/` directory. The script will export all the necessary metrics and figures for the final article directly into the analysis subfolder of the latest run, including:
+*   `trajectory.png` (Top-down visual plot of the flight path and revisits)
+*   `local_position.csv` & `velocity_local.csv`
+*   Extracted annotated RGB video highlighting YOLO's bounding boxes.
+
+---
+
 ## Quick Start Guide
 
 ### 1. Build ROS2 Workspace
